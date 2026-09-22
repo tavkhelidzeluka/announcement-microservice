@@ -4,26 +4,50 @@ A serverless microservice exposing two JSON REST APIs for storing and
 retrieving announcements, built to the PIL RESTful API Guidelines and deployed
 entirely from CloudFormation.
 
+```mermaid
+flowchart LR
+    channels["PIL digital channels<br/><i>read</i>"]
+    publisher["Back-office publisher<br/><i>write</i>"]
+
+    subgraph aws["AWS"]
+        direction LR
+        pool["Cognito user pool<br/>OAuth 2.0 authorization server"]
+        gw["API Gateway REST API<br/><i>generated from the OpenAPI contract</i><br/>throttling · gzip · JSON API error mapping"]
+        authz{"Cognito<br/>authorizer<br/>scope check"}
+        listfn["list lambda<br/><i>read-only IAM role</i>"]
+        createfn["create lambda<br/><i>write-only IAM role</i>"]
+        secret["Secrets Manager<br/>Api-Key values"]
+        ddb[("DynamoDB<br/>announcements<br/>+ date index")]
+    end
+
+    publisher -. "client credentials grant" .-> pool
+    channels -- "GET /announcements" --> gw
+    publisher -- "POST /announcements<br/>+ Bearer token" --> gw
+    gw -- GET --> listfn
+    gw -- POST --> authz
+    authz -. "verify signature, issuer,<br/>expiry, scope" .-> pool
+    authz -- "announcements/write" --> createfn
+    listfn -. "Api-Key, cached 5 min" .-> secret
+    createfn -.-> secret
+    listfn --> ddb
+    createfn --> ddb
+
+    classDef client fill:#ffffff,stroke:#475569,color:#111827
+    classDef edge fill:#fff7ed,stroke:#c2410c,color:#111827
+    classDef compute fill:#eef2ff,stroke:#4338ca,color:#111827
+    classDef data fill:#ecfdf5,stroke:#047857,color:#111827
+    classDef identity fill:#fdf4ff,stroke:#a21caf,color:#111827
+    class channels,publisher client
+    class gw,authz edge
+    class listfn,createfn compute
+    class ddb,secret data
+    class pool identity
 ```
-                    ┌──────────────────────── AWS ─────────────────────────┐
-                    │                                                      │
-  GET               │   ┌───────────────┐      ┌──────────────┐            │
-  /announcements ──►│──►│               │─────►│ list λ       │──┐         │
-                    │   │  API Gateway  │      └──────────────┘  │         │
-  POST              │   │  (REST API,   │      ┌──────────────┐  ├─►┌────────────┐
-  /announcements ──►│──►│  contract-    │─────►│ create λ     │──┘  │  DynamoDB  │
-                    │   │  imported)    │      └──────────────┘     └────────────┘
-                    │   └───────┬───────┘             │                    │
-                    │           │ authorizes          │ reads Api-Key      │
-                    │           ▼                     ▼                    │
-                    │   ┌───────────────┐      ┌──────────────┐            │
-                    │   │ Cognito       │      │ Secrets      │            │
-                    │   │ (OAuth 2.0)   │      │ Manager      │            │
-                    │   └───────────────┘      └──────────────┘            │
-                    │                                                      │
-                    │   CloudWatch: metrics, alarms → SNS, dashboard, X-Ray │
-                    └──────────────────────────────────────────────────────┘
-```
+
+Every component above is observed: both lambdas and the stage emit structured
+JSON logs, metrics and X-Ray traces, and twelve CloudWatch alarms publish to an
+SNS topic. [`docs/architecture.md` §7](docs/architecture.md#7-monitoring-and-alerting)
+lists what each alarm catches.
 
 | | |
 |---|---|
@@ -126,13 +150,36 @@ implementation/technology-agnostic** — and a document full of `arn:aws:...` is
 the opposite of that. So the two concerns are kept in separate files and merged
 at build time:
 
-```
-api/openapi.yaml                          ← published contract. No AWS in it.
-        +
-infrastructure/openapi-aws-overlay.yaml   ← only the x-amazon-apigateway-* bindings
-        │  scripts/build_openapi.py  (deep merge + ${PLACEHOLDER} substitution)
-        ▼
-build/openapi.aws.yaml  ──► S3 ──► AWS::ApiGateway::RestApi.BodyS3Location
+```mermaid
+flowchart TB
+    subgraph authored["Written by hand"]
+        direction LR
+        contract["api/openapi.yaml<br/><b>the published contract</b><br/>no AWS anywhere in it"]
+        overlay["infrastructure/openapi-aws-overlay.yaml<br/>only the x-amazon-apigateway-* bindings"]
+    end
+
+    found["<b>Stack 1: foundation</b><br/>DynamoDB, Cognito, Secrets, both lambdas"]
+    outputs["stack outputs<br/>user pool ARN, lambda names, token URL"]
+    merge["scripts/build_openapi.py<br/>deep merge, fill placeholders,<br/>strip the apiKey scheme"]
+    built["build/openapi.aws.yaml"]
+    s3[("S3<br/>object key = hash of the document")]
+    api["<b>Stack 2: api</b><br/>RestApi BodyS3Location, stage, gateway responses"]
+    live(["Deployed API"])
+
+    contract --> merge
+    overlay --> merge
+    found --> outputs
+    outputs -- "the ARNs only exist<br/>once the stack does" --> merge
+    merge --> built --> s3 --> api --> live
+
+    classDef src fill:#eff6ff,stroke:#1d4ed8,color:#111827
+    classDef step fill:#f5f5f4,stroke:#57534e,color:#111827
+    classDef stack fill:#fff7ed,stroke:#c2410c,color:#111827
+    classDef out fill:#ecfdf5,stroke:#047857,color:#111827
+    class contract,overlay src
+    class merge,built,outputs step
+    class found,api stack
+    class s3,live out
 ```
 
 ```yaml

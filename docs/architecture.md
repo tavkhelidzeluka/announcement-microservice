@@ -23,6 +23,48 @@ where that matters are called out.
 
 ## 2. Component choices
 
+Before the individual choices, here is what they do together. This is the
+private path, `POST /announcements`, because it exercises every checkpoint;
+the public path is the same minus the authorizer.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor P as Publisher
+    participant G as API Gateway
+    participant K as Cognito
+    participant L as create lambda
+    participant S as Secrets Manager
+    participant D as DynamoDB
+
+    P->>K: POST /oauth2/token, client credentials
+    K-->>P: access token, scope announcements/write
+
+    P->>G: POST /announcements, Bearer token
+    G->>G: stage throttle, else 429
+    Note over G,K: the authorizer verifies the JWT locally against the pool's<br/>cached signing keys - no call to Cognito per request
+    G->>G: check signature, issuer, expiry, and the announcements/write scope
+    alt token absent, invalid, or missing the scope
+        G-->>P: 401 or 403, as a JSON API error document
+    else accepted
+        G->>G: validate body against the contract schema, else 400
+        Note over G,L: aws_proxy: the whole request is handed over
+        G->>L: invoke
+        L->>S: fetch Api-Key set, cached 5 min per environment
+        L->>L: Api-Key else 403, Api-Version else 400, Content-Type else 415
+        L->>L: validate payload, reporting every problem at once
+        L->>D: TransactWriteItems: put announcement, increment counter
+        D-->>L: committed
+        L-->>G: 201 with the created resource
+        G-->>P: 201
+    end
+```
+
+Every rejection above, wherever it happens, comes back as the same JSON API
+error document. That is what the fourteen gateway responses in
+`infrastructure/api.yaml` buy: a client parses one error format, not two.
+
+
 ### API Gateway REST API, not HTTP API
 
 HTTP API (v2) is roughly 70% cheaper per million requests and has lower
@@ -118,15 +160,36 @@ given up; §5 covers what replaces it.
 
 ## 3. Data model
 
-```
-Table: announcements-<env>            (PAY_PER_REQUEST, PITR on)
-  announcementId (HASH)  "9a5f3c1e-…"        ← RFC 4122 UUID
-  title, description, announcementDate, created, lastModified, createdBy
+```mermaid
+flowchart LR
+    subgraph table["Table &nbsp; announcements-ENV &nbsp; · &nbsp; on demand, PITR on"]
+        direction TB
+        item["<b>announcement item</b><br/>announcementId (PK) = UUID<br/>title, description, announcementDate<br/>created, lastModified, createdBy<br/>listPartition = ALL<br/>announcementDateId = announcementDate + id"]
+        stats["<b>counter item</b><br/>announcementId (PK) = __stats__<br/>announcementCount<br/><i>carries no listPartition</i>"]
+    end
 
-GSI: announcementDateIndex
-  listPartition      (HASH)   "ALL"
-  announcementDateId (RANGE)  "2026-03-01T09:00:00Z#9a5f3c1e-…"
+    subgraph gsi["GSI &nbsp; announcementDateIndex &nbsp; · &nbsp; projection ALL"]
+        idx["listPartition (PK) = ALL<br/>announcementDateId (SK)<br/><i>one partition, totally ordered</i>"]
+    end
+
+    query["list lambda<br/>Query: listPartition = ALL<br/>ScanIndexForward = sort direction<br/>Limit = page size<br/>ExclusiveStartKey = cursor"]
+
+    item -- "projected into" --> idx
+    stats -. "no listPartition, so it can<br/>never appear in a list response" .-x idx
+    query --> idx
+
+    classDef row fill:#ecfdf5,stroke:#047857,color:#111827
+    classDef counter fill:#fef9c3,stroke:#a16207,color:#111827
+    classDef index fill:#eff6ff,stroke:#1d4ed8,color:#111827
+    classDef fn fill:#eef2ff,stroke:#4338ca,color:#111827
+    class item row
+    class stats counter
+    class idx index
+    class query fn
 ```
+
+The sort key is `announcementDate` followed by the announcement id, so two
+announcements sharing a timestamp still have a total order.
 
 **Why a constant partition key on the index.** "List every announcement in date
 order" is one logical partition by definition. Making it literally one
@@ -179,6 +242,25 @@ A cursor is a base64url-encoded, versioned envelope around DynamoDB's
 sort direction, exact key membership, value types, and that the partition is
 the one this API serves. Every failure is a `400`, never a `500` and never a
 read outside the collection.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Client
+    participant L as list lambda
+    participant D as DynamoDB
+
+    C->>L: GET /announcements?limit=2
+    L->>D: Query, Limit 2, no ExclusiveStartKey
+    D-->>L: 2 items + LastEvaluatedKey
+    L-->>C: data[2], links.next = cursor(LastEvaluatedKey)
+
+    C->>L: GET /announcements?limit=2&cursor=...
+    L->>L: decode, check version, sort order,<br/>key membership, partition
+    L->>D: Query, Limit 2, ExclusiveStartKey
+    D-->>L: 1 item, no LastEvaluatedKey
+    L-->>C: data[1], no links.next, end of collection
+```
 
 A page that ends exactly on the collection boundary still carries a `next`
 link, because DynamoDB returns a `LastEvaluatedKey` whenever it stopped early —
