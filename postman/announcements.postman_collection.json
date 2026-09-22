@@ -140,7 +140,10 @@
               ]
             },
             "url": {
-              "raw": "{{tokenUrl}}"
+              "raw": "{{tokenUrl}}",
+              "host": [
+                "{{tokenUrl}}"
+              ]
             }
           },
           "event": [
@@ -193,7 +196,13 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/announcements"
+              "raw": "{{baseUrl}}/announcements",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "announcements"
+              ]
             },
             "body": {
               "mode": "raw",
@@ -267,7 +276,13 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/announcements"
+              "raw": "{{baseUrl}}/announcements",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "announcements"
+              ]
             },
             "body": {
               "mode": "raw",
@@ -322,7 +337,13 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/announcements"
+              "raw": "{{baseUrl}}/announcements",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "announcements"
+              ]
             },
             "body": {
               "mode": "raw",
@@ -377,7 +398,13 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/announcements"
+              "raw": "{{baseUrl}}/announcements",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "announcements"
+              ]
             },
             "body": {
               "mode": "raw",
@@ -435,7 +462,13 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/announcements"
+              "raw": "{{baseUrl}}/announcements",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "announcements"
+              ]
             },
             "body": {
               "mode": "raw",
@@ -479,7 +512,13 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/announcements"
+              "raw": "{{baseUrl}}/announcements",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "announcements"
+              ]
             },
             "body": {
               "mode": "raw",
@@ -539,7 +578,13 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/announcements"
+              "raw": "{{baseUrl}}/announcements",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "announcements"
+              ]
             },
             "body": {
               "mode": "raw",
@@ -599,7 +644,13 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/announcements"
+              "raw": "{{baseUrl}}/announcements",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "announcements"
+              ]
             },
             "body": {
               "mode": "raw",
@@ -657,7 +708,13 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/announcements"
+              "raw": "{{baseUrl}}/announcements",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "announcements"
+              ]
             },
             "body": {
               "mode": "raw",
@@ -715,7 +772,13 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/announcements"
+              "raw": "{{baseUrl}}/announcements",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "announcements"
+              ]
             },
             "body": {
               "mode": "raw",
@@ -773,7 +836,13 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/announcements"
+              "raw": "{{baseUrl}}/announcements",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "announcements"
+              ]
             },
             "body": {
               "mode": "raw",
@@ -828,7 +897,13 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/announcements"
+              "raw": "{{baseUrl}}/announcements",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "announcements"
+              ]
             },
             "body": {
               "mode": "raw",
@@ -888,7 +963,13 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/announcements"
+              "raw": "{{baseUrl}}/announcements",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "announcements"
+              ]
             }
           },
           "event": [
@@ -955,7 +1036,13 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/announcements"
+              "raw": "{{baseUrl}}/announcements",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "announcements"
+              ]
             }
           },
           "event": [
@@ -988,7 +1075,19 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/announcements?limit=1"
+              "raw": "{{baseUrl}}/announcements?limit=1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "announcements"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "1"
+                }
+              ]
             }
           },
           "event": [
@@ -1028,7 +1127,23 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/announcements?limit=1&cursor={{cursor}}"
+              "raw": "{{baseUrl}}/announcements?limit=1&cursor={{cursor}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "announcements"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "1"
+                },
+                {
+                  "key": "cursor",
+                  "value": "{{cursor}}"
+                }
+              ]
             }
           },
           "event": [
@@ -1072,7 +1187,19 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/announcements?sort=announcementDate"
+              "raw": "{{baseUrl}}/announcements?sort=announcementDate",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "announcements"
+              ],
+              "query": [
+                {
+                  "key": "sort",
+                  "value": "announcementDate"
+                }
+              ]
             }
           },
           "event": [
@@ -1106,7 +1233,19 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/announcements?limit=100"
+              "raw": "{{baseUrl}}/announcements?limit=100",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "announcements"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "100"
+                }
+              ]
             }
           },
           "event": [
@@ -1144,7 +1283,19 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/announcements?limit=0"
+              "raw": "{{baseUrl}}/announcements?limit=0",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "announcements"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "0"
+                }
+              ]
             }
           },
           "event": [
@@ -1181,7 +1332,19 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/announcements?limit=1000"
+              "raw": "{{baseUrl}}/announcements?limit=1000",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "announcements"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "1000"
+                }
+              ]
             }
           },
           "event": [
@@ -1216,7 +1379,19 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/announcements?cursor=Zm9yZ2Vk"
+              "raw": "{{baseUrl}}/announcements?cursor=Zm9yZ2Vk",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "announcements"
+              ],
+              "query": [
+                {
+                  "key": "cursor",
+                  "value": "Zm9yZ2Vk"
+                }
+              ]
             }
           },
           "event": [
@@ -1254,7 +1429,19 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/announcements?sort=title"
+              "raw": "{{baseUrl}}/announcements?sort=title",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "announcements"
+              ],
+              "query": [
+                {
+                  "key": "sort",
+                  "value": "title"
+                }
+              ]
             }
           },
           "event": [
@@ -1289,7 +1476,23 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/announcements?utm_source=newsletter&debug=true"
+              "raw": "{{baseUrl}}/announcements?utm_source=newsletter&debug=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "announcements"
+              ],
+              "query": [
+                {
+                  "key": "utm_source",
+                  "value": "newsletter"
+                },
+                {
+                  "key": "debug",
+                  "value": "true"
+                }
+              ]
             }
           },
           "event": [
@@ -1325,7 +1528,13 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/announcements"
+              "raw": "{{baseUrl}}/announcements",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "announcements"
+              ]
             }
           },
           "event": [
@@ -1360,7 +1569,13 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/announcements"
+              "raw": "{{baseUrl}}/announcements",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "announcements"
+              ]
             }
           },
           "event": [
@@ -1397,7 +1612,13 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/announcements"
+              "raw": "{{baseUrl}}/announcements",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "announcements"
+              ]
             }
           },
           "event": [
@@ -1428,7 +1649,13 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/announcements"
+              "raw": "{{baseUrl}}/announcements",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "announcements"
+              ]
             }
           },
           "event": [
@@ -1463,7 +1690,13 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/announcements"
+              "raw": "{{baseUrl}}/announcements",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "announcements"
+              ]
             }
           },
           "event": [
@@ -1502,7 +1735,13 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/announcements"
+              "raw": "{{baseUrl}}/announcements",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "announcements"
+              ]
             }
           },
           "event": [
@@ -1537,7 +1776,13 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/announcements"
+              "raw": "{{baseUrl}}/announcements",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "announcements"
+              ]
             }
           },
           "event": [
@@ -1575,7 +1820,13 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/announcementz"
+              "raw": "{{baseUrl}}/announcementz",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "announcementz"
+              ]
             }
           },
           "event": [
@@ -1612,7 +1863,13 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/announcements"
+              "raw": "{{baseUrl}}/announcements",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "announcements"
+              ]
             }
           },
           "event": [
