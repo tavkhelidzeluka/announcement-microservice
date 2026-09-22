@@ -73,7 +73,7 @@ applicable to this service.
 | Meta information | MUST follow JSON API | ✔ | `meta.count`, `meta.pageSize`, `meta.requestId`, and resource-level `created`/`lastModified`. |
 | Links | MUST follow JSON API | ✔ | `self`, `first`, `next`. |
 | Creating resources | MUST follow JSON API; SHOULD return 201; ids MAY be UUIDs | ✔ | `201` with the created resource; RFC 4122 v4 ids; `409` on a type mismatch; `403` on a client-generated id. |
-| Errors | MUST follow the JSON API error shape | ✔ | `{id, status, code, title, detail, source}` — from the handlers *and* from API Gateway, via 14 `AWS::ApiGateway::GatewayResponse` resources. |
+| Errors | MUST follow the JSON API error shape | ✔ | `{id, status, code, title, detail, source}` — from the handlers *and* from API Gateway, via 14 gateway responses declared in the OpenAPI overlay. |
 
 ## Performance and bandwidth
 

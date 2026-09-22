@@ -123,7 +123,7 @@ standard error list:
 ## The contract is the deployment
 
 API Gateway is *defined by* the OpenAPI document: it creates the resources,
-methods, models, validators, authorizer and CORS configuration from it. Each
+methods, models, authorizer, CORS and error formatting from it. Each
 operation is bound to its Lambda by an AWS vendor extension:
 
 ```yaml
@@ -151,7 +151,7 @@ flowchart TB
     merge["scripts/build_openapi.py<br/>deep merge, fill placeholders,<br/>strip the apiKey scheme"]
     built["build/openapi.aws.yaml"]
     s3[("S3<br/>object key = hash of the document")]
-    api["<b>Stack 2: api</b><br/>RestApi BodyS3Location, stage, gateway responses"]
+    api["<b>Stack 2: api</b><br/>RestApi BodyS3Location, deployment, stage"]
     live(["Deployed API"])
 
     contract --> merge
@@ -186,7 +186,7 @@ reached the handler.
 | Stack | Owns | Lifecycle |
 |---|---|---|
 | `announcements-<env>-foundation` | DynamoDB table, Cognito authorization server, `Api-Key` secret, both Lambda functions, SNS alert topic, alarms | Long-lived. Holds state and identity. |
-| `announcements-<env>-api` | API Gateway REST API, deployment, stage, gateway responses, API alarms, dashboard | Changes with every contract change. |
+| `announcements-<env>-api` | API Gateway REST API, deployment, stage, API alarms, dashboard | Changes with every contract change. |
 
 They are separate because of a hard ordering constraint, not a preference: the
 OpenAPI document that the API stack imports has to name the **Cognito user pool
@@ -246,9 +246,16 @@ curl -s -X POST "$BASE/announcements" \
 
 ```bash
 make test                                       # unit + integration, offline (moto)
+./scripts/smoke_test.sh --env dev --region eu-north-1   # against a deployment
 npx newman run postman/announcements.postman_collection.json \
-    -e postman/announcements.postman_environment.json          # against a deployment
+    -e postman/announcements.postman_environment.json
 ```
+
+`make validate` checks the contract and the templates offline, but it cannot
+see how API Gateway *interprets* the document on import — a security scheme it
+silently ignores is still valid OpenAPI. `smoke_test.sh` closes that gap with
+24 assertions against a real deployment, and is the reason two import-level
+defects were caught before submission rather than after.
 
 The Postman collection must be run **in order** — `Setup` fetches an access
 token and `Create` seeds the announcements that `List` pages through. Fill the
@@ -268,7 +275,7 @@ anywhere in a body.
 api/openapi.yaml                       the published contract (OpenAPI 3.0.3)
 infrastructure/
   foundation.yaml                      data, identity, compute, alarms
-  api.yaml                             API Gateway, stage, gateway responses, dashboard
+  api.yaml                             API Gateway, stage, alarms, dashboard
   openapi-aws-overlay.yaml             the x-amazon-apigateway-* bindings
 src/announcements/
   app/                                 config, errors, http, security, pagination,

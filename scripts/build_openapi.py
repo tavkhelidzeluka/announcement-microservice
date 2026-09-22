@@ -82,6 +82,30 @@ def strip_api_key_scheme(document, scheme_name="apiKey"):
                 operation["security"] = prune(operation["security"])
 
 
+def use_apigateway_cognito_form(document):
+    """Rewrite Cognito security schemes into the shape API Gateway imports.
+
+    API Gateway only recognises a Cognito user pool authorizer when the scheme
+    is declared as ``type: apiKey`` on the ``Authorization`` header. A
+    ``type: oauth2`` scheme carrying the same ``x-amazon-apigateway-authorizer``
+    extension is ignored on import - silently, leaving the method with
+    ``authorizationType: NONE``. The published contract keeps the oauth2 form,
+    which is both correct OpenAPI and what the guidelines ask for; only the
+    copy API Gateway imports is rewritten.
+
+    ``flows`` is dropped because it is invalid on an ``apiKey`` scheme.
+    """
+    schemes = (document.get("components") or {}).get("securitySchemes") or {}
+    for scheme in schemes.values():
+        authorizer = scheme.get("x-amazon-apigateway-authorizer") or {}
+        if authorizer.get("type") != "cognito_user_pools":
+            continue
+        scheme.pop("flows", None)
+        scheme["type"] = "apiKey"
+        scheme["name"] = "Authorization"
+        scheme["in"] = "header"
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--contract", default="api/openapi.yaml")
@@ -116,6 +140,7 @@ def main():
 
     merged = deep_merge(contract, overlay)
     strip_api_key_scheme(merged)
+    use_apigateway_cognito_form(merged)
 
     # The canonical Philips `servers` block is documentation only; the
     # deployed API is reached through its invoke URL or a custom domain.

@@ -8,16 +8,12 @@
 #
 # ${...} placeholders are filled from the foundation stack's outputs.
 
-# Body validation at the edge, so a malformed payload costs a gateway request
-# rather than a Lambda invocation. Parameters are deliberately not validated
-# here: a missing Api-Key must be 403 and a missing Api-Version must be
-# MISSING_API_VERSION, neither of which BAD_REQUEST_PARAMETERS can express.
-x-amazon-apigateway-request-validators:
-  bodyOnly:
-    validateRequestBody: true
-    validateRequestParameters: false
-
-x-amazon-apigateway-request-validator: bodyOnly
+# No API Gateway request validator. It would be cheaper to reject malformed
+# payloads at the edge, but the gateway can only ever answer 400, and the
+# contract - following JSON API, as the guidelines require - owes 403 for a
+# client-generated id and 409 for a mismatched type. A validator here would
+# short-circuit both. The handler is the single validation authority, and it
+# is the only layer that can produce a JSON Pointer to the offending member.
 
 components:
   securitySchemes:
@@ -108,3 +104,127 @@ paths:
             responseTemplates:
               application/json: |-
                 {"errors":[{"id":"$context.requestId","status":"405","code":"METHOD_NOT_ALLOWED","title":"Method not allowed","detail":"This resource supports GET, POST and OPTIONS."}],"meta":{"requestId":"$context.requestId"}}
+
+# Error format for everything API Gateway rejects before a handler runs.
+#
+# These live in the document rather than as AWS::ApiGateway::GatewayResponse
+# resources because importing an OpenAPI definition overwrites the API's
+# gateway responses. CloudFormation would see the resources unchanged, do
+# nothing, and the API would silently fall back to AWS's {"message": "..."}
+# bodies on the second and every later deploy.
+x-amazon-apigateway-gateway-responses:
+  DEFAULT_4XX:
+    responseParameters:
+      gatewayresponse.header.Content-Type: '''application/json'''
+      gatewayresponse.header.Cache-Control: '''no-store'''
+      gatewayresponse.header.Access-Control-Allow-Origin: '''${ALLOWED_ORIGIN}'''
+    responseTemplates:
+      application/json: '{"errors":[{"id":"$context.requestId","code":"BAD_REQUEST","title":"Bad request","detail":"The request could not be processed as submitted."}],"meta":{"requestId":"$context.requestId"}}'
+  DEFAULT_5XX:
+    responseParameters:
+      gatewayresponse.header.Content-Type: '''application/json'''
+      gatewayresponse.header.Cache-Control: '''no-store'''
+      gatewayresponse.header.Access-Control-Allow-Origin: '''${ALLOWED_ORIGIN}'''
+    responseTemplates:
+      application/json: '{"errors":[{"id":"$context.requestId","status":"500","code":"SERVER_ERROR","title":"Server error","detail":"The request could not be processed. Quote the error id when reporting this."}],"meta":{"requestId":"$context.requestId"}}'
+  BAD_REQUEST_BODY:
+    statusCode: '400'
+    responseParameters:
+      gatewayresponse.header.Content-Type: '''application/json'''
+      gatewayresponse.header.Cache-Control: '''no-store'''
+      gatewayresponse.header.Access-Control-Allow-Origin: '''${ALLOWED_ORIGIN}'''
+    responseTemplates:
+      application/json: '{"errors":[{"id":"$context.requestId","status":"400","code":"INVALID_PARAMETER_VALUE","title":"Invalid parameter value","detail":"$util.escapeJavaScript($context.error.validationErrorString)","source":{"pointer":"/data"}}],"meta":{"requestId":"$context.requestId"}}'
+  BAD_REQUEST_PARAMETERS:
+    statusCode: '400'
+    responseParameters:
+      gatewayresponse.header.Content-Type: '''application/json'''
+      gatewayresponse.header.Cache-Control: '''no-store'''
+      gatewayresponse.header.Access-Control-Allow-Origin: '''${ALLOWED_ORIGIN}'''
+    responseTemplates:
+      application/json: '{"errors":[{"id":"$context.requestId","status":"400","code":"MISSING_PARAMETER","title":"Missing required parameter","detail":"$util.escapeJavaScript($context.error.validationErrorString)"}],"meta":{"requestId":"$context.requestId"}}'
+  UNAUTHORIZED:
+    statusCode: '401'
+    responseParameters:
+      gatewayresponse.header.Content-Type: '''application/json'''
+      gatewayresponse.header.Cache-Control: '''no-store'''
+      gatewayresponse.header.WWW-Authenticate: '''Bearer realm="announcements"'''
+      gatewayresponse.header.Access-Control-Allow-Origin: '''${ALLOWED_ORIGIN}'''
+    responseTemplates:
+      application/json: '{"errors":[{"id":"$context.requestId","status":"401","code":"UNAUTHORIZED","title":"Unauthorized","detail":"A valid access token is required for this operation."}],"meta":{"requestId":"$context.requestId"}}'
+  EXPIRED_TOKEN:
+    statusCode: '401'
+    responseParameters:
+      gatewayresponse.header.Content-Type: '''application/json'''
+      gatewayresponse.header.Cache-Control: '''no-store'''
+      gatewayresponse.header.WWW-Authenticate: '''Bearer realm="announcements", error="invalid_token"'''
+      gatewayresponse.header.Access-Control-Allow-Origin: '''${ALLOWED_ORIGIN}'''
+    responseTemplates:
+      application/json: '{"errors":[{"id":"$context.requestId","status":"401","code":"UNAUTHORIZED","title":"Unauthorized","detail":"The access token has expired."}],"meta":{"requestId":"$context.requestId"}}'
+  INVALID_SIGNATURE:
+    statusCode: '401'
+    responseParameters:
+      gatewayresponse.header.Content-Type: '''application/json'''
+      gatewayresponse.header.Cache-Control: '''no-store'''
+      gatewayresponse.header.WWW-Authenticate: '''Bearer realm="announcements", error="invalid_token"'''
+      gatewayresponse.header.Access-Control-Allow-Origin: '''${ALLOWED_ORIGIN}'''
+    responseTemplates:
+      application/json: '{"errors":[{"id":"$context.requestId","status":"401","code":"UNAUTHORIZED","title":"Unauthorized","detail":"The access token signature could not be verified."}],"meta":{"requestId":"$context.requestId"}}'
+  ACCESS_DENIED:
+    statusCode: '403'
+    responseParameters:
+      gatewayresponse.header.Content-Type: '''application/json'''
+      gatewayresponse.header.Cache-Control: '''no-store'''
+      gatewayresponse.header.WWW-Authenticate: '''Bearer realm="announcements", error="insufficient_scope", scope="announcements/write"'''
+      gatewayresponse.header.Access-Control-Allow-Origin: '''${ALLOWED_ORIGIN}'''
+    responseTemplates:
+      application/json: '{"errors":[{"id":"$context.requestId","status":"403","code":"INSUFFICIENT_SCOPE","title":"Insufficient scope","detail":"The access token does not carry the announcements/write scope."}],"meta":{"requestId":"$context.requestId"}}'
+  MISSING_AUTHENTICATION_TOKEN:
+    statusCode: '404'
+    responseParameters:
+      gatewayresponse.header.Content-Type: '''application/json'''
+      gatewayresponse.header.Cache-Control: '''no-store'''
+      gatewayresponse.header.Access-Control-Allow-Origin: '''${ALLOWED_ORIGIN}'''
+    responseTemplates:
+      application/json: '{"errors":[{"id":"$context.requestId","status":"404","code":"RESOURCE_NOT_FOUND","title":"Resource not found","detail":"The requested resource does not exist."}],"meta":{"requestId":"$context.requestId"}}'
+  RESOURCE_NOT_FOUND:
+    statusCode: '404'
+    responseParameters:
+      gatewayresponse.header.Content-Type: '''application/json'''
+      gatewayresponse.header.Cache-Control: '''no-store'''
+      gatewayresponse.header.Access-Control-Allow-Origin: '''${ALLOWED_ORIGIN}'''
+    responseTemplates:
+      application/json: '{"errors":[{"id":"$context.requestId","status":"404","code":"RESOURCE_NOT_FOUND","title":"Resource not found","detail":"The requested resource does not exist."}],"meta":{"requestId":"$context.requestId"}}'
+  THROTTLED:
+    statusCode: '429'
+    responseParameters:
+      gatewayresponse.header.Content-Type: '''application/json'''
+      gatewayresponse.header.Cache-Control: '''no-store'''
+      gatewayresponse.header.Retry-After: '''1'''
+      gatewayresponse.header.Access-Control-Allow-Origin: '''${ALLOWED_ORIGIN}'''
+    responseTemplates:
+      application/json: '{"errors":[{"id":"$context.requestId","status":"429","code":"TOO_MANY_REQUESTS","title":"Too many requests","detail":"Rate limit exceeded. Please retry later."}],"meta":{"requestId":"$context.requestId"}}'
+  QUOTA_EXCEEDED:
+    statusCode: '429'
+    responseParameters:
+      gatewayresponse.header.Content-Type: '''application/json'''
+      gatewayresponse.header.Cache-Control: '''no-store'''
+      gatewayresponse.header.Access-Control-Allow-Origin: '''${ALLOWED_ORIGIN}'''
+    responseTemplates:
+      application/json: '{"errors":[{"id":"$context.requestId","status":"429","code":"TOO_MANY_REQUESTS","title":"Too many requests","detail":"The quota for this client has been exhausted."}],"meta":{"requestId":"$context.requestId"}}'
+  UNSUPPORTED_MEDIA_TYPE:
+    statusCode: '415'
+    responseParameters:
+      gatewayresponse.header.Content-Type: '''application/json'''
+      gatewayresponse.header.Cache-Control: '''no-store'''
+      gatewayresponse.header.Access-Control-Allow-Origin: '''${ALLOWED_ORIGIN}'''
+    responseTemplates:
+      application/json: '{"errors":[{"id":"$context.requestId","status":"415","code":"UNSUPPORTED_MEDIA_TYPE","title":"Unsupported media type","detail":"This API only consumes application/json."}],"meta":{"requestId":"$context.requestId"}}'
+  REQUEST_TOO_LARGE:
+    statusCode: '413'
+    responseParameters:
+      gatewayresponse.header.Content-Type: '''application/json'''
+      gatewayresponse.header.Cache-Control: '''no-store'''
+      gatewayresponse.header.Access-Control-Allow-Origin: '''${ALLOWED_ORIGIN}'''
+    responseTemplates:
+      application/json: '{"errors":[{"id":"$context.requestId","status":"413","code":"BAD_REQUEST","title":"Payload too large","detail":"The request body exceeds the maximum accepted size."}],"meta":{"requestId":"$context.requestId"}}'

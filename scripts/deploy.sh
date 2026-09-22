@@ -130,7 +130,6 @@ aws cloudformation deploy \
     "StageName=$STAGE" \
     "OpenApiBucket=$ARTIFACT_BUCKET" \
     "OpenApiKey=$SPEC_KEY" \
-    "AllowedOrigin=$ALLOWED_ORIGIN" \
     "ConfigureApiGatewayCloudWatchRole=$CONFIGURE_APIGW_ROLE"
 
 # ---------------------------------------------------------------------------

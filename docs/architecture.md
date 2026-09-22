@@ -47,7 +47,6 @@ sequenceDiagram
     alt token absent, invalid, or missing the scope
         G-->>P: 401 or 403, as a JSON API error document
     else accepted
-        G->>G: validate body against the contract schema, else 400
         Note over G,L: aws_proxy: the whole request is handed over
         G->>L: invoke
         L->>S: fetch Api-Key set, cached 5 min per environment
@@ -61,8 +60,11 @@ sequenceDiagram
 ```
 
 Every rejection above, wherever it happens, comes back as the same JSON API
-error document. That is what the fourteen gateway responses in
-`infrastructure/api.yaml` buy: a client parses one error format, not two.
+error document. That is what the fourteen gateway responses buy: a client
+parses one error format, not two. They are declared in the OpenAPI overlay
+rather than as CloudFormation resources, because importing a definition
+overwrites the API's gateway responses - CloudFormation-managed ones survive
+the first deploy and vanish on the second.
 
 
 ### API Gateway REST API, not HTTP API
@@ -74,8 +76,7 @@ are only available on the REST API:
 | Needed | REST API | HTTP API |
 |---|---|---|
 | Customisable gateway responses (JSON API error documents for gateway-level rejections) | yes | no |
-| Request validation from the OpenAPI schema | yes | no |
-| Full OpenAPI 3 import including models, validators, mock integrations | yes | partial |
+| Full OpenAPI 3 import including models, mock integrations, Cognito authorizer | yes | partial |
 | Per-method throttling | yes | per-route, coarser |
 
 Without customisable gateway responses, a client would get
@@ -421,10 +422,13 @@ Deliberate choices someone might reasonably make differently.
   both. A date-time orders unambiguously, which the pagination sort key needs.
   Sub-second precision is dropped on normalisation — the id suffix in the sort
   key already breaks ties.
-* **Validation happens twice.** API Gateway validates the body against the
-  contract's JSON Schema, which keeps malformed traffic off the Lambda bill;
-  the handler validates again because it is the layer that can produce a JSON
-  Pointer to the offending member and report every problem in one response.
+* **No request validator at the edge.** Rejecting malformed payloads before
+  Lambda would be marginally cheaper, but API Gateway can only ever answer
+  `400`, and JSON API - which the guidelines require - owes `403` for a
+  client-generated id and `409` for a mismatched type. A validator
+  short-circuits both, so the deployed API would contradict its own contract.
+  The handler is the single validation authority, and the only layer that can
+  point a JSON Pointer at the offending member.
 * **Errors are reported in batches.** JSON API models `errors` as an array, so
   a client fixing a payload learns everything wrong with it at once.
 * **The `Api-Key` check runs before the `Api-Version` check.** Both are

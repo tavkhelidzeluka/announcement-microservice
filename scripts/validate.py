@@ -113,6 +113,57 @@ def main():
             "apiKey" not in aws_document["components"]["securitySchemes"],
         )
 
+        # A Cognito scheme left as type: oauth2 imports as no authorizer at
+        # all, leaving the private endpoint open. Valid OpenAPI either way,
+        # so only an explicit check catches it.
+        cognito = [
+            scheme
+            for scheme in aws_document["components"]["securitySchemes"].values()
+            if (scheme.get("x-amazon-apigateway-authorizer") or {}).get("type")
+            == "cognito_user_pools"
+        ]
+        check(
+            "the Cognito authorizer is in the form API Gateway imports",
+            bool(cognito)
+            and all(
+                s.get("type") == "apiKey"
+                and s.get("name") == "Authorization"
+                and s.get("in") == "header"
+                and "flows" not in s
+                for s in cognito
+            ),
+            "found: {0}".format(
+                [
+                    {k: v for k, v in s.items() if k in ("type", "name", "in")}
+                    for s in cognito
+                ]
+            ),
+        )
+        # Gateway responses must live in the document: an OpenAPI import
+        # overwrites whatever the API had, so CFN-managed ones vanish on the
+        # second deploy and the API falls back to AWS's {"message": ...}.
+        gateway_responses = aws_document.get(
+            "x-amazon-apigateway-gateway-responses", {}
+        )
+        required_types = {
+            "DEFAULT_4XX", "DEFAULT_5XX", "UNAUTHORIZED", "ACCESS_DENIED",
+            "MISSING_AUTHENTICATION_TOKEN", "THROTTLED",
+            "UNSUPPORTED_MEDIA_TYPE",
+        }
+        missing_types = sorted(required_types - set(gateway_responses))
+        check(
+            "error formatting for gateway rejections is in the document",
+            not missing_types,
+            "missing: {0}".format(missing_types),
+        )
+
+        secured = aws_document["paths"]["/announcements"]["post"].get("security")
+        check(
+            "POST requires the announcements/write scope",
+            secured == [{"announcementsOAuth2": ["announcements/write"]}],
+            "found: {0}".format(secured),
+        )
+
     templates = {}
     for path, label in ((FOUNDATION, "foundation"), (API, "api")):
         try:
