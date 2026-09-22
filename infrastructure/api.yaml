@@ -143,8 +143,12 @@ Resources:
       AccessLogSetting:
         DestinationArn: !GetAtt AccessLogGroup.Arn
         # JSON for Logs Insights. Never bodies, Api-Key or Authorization.
+        # Request headers are not available as access-log context variables -
+        # $context.request.header.X renders as "-" whether or not the name is
+        # hyphenated - so Api-Version is recorded in the handler's structured
+        # log instead, where it is correct.
         Format: >-
-          {"requestId":"$context.requestId","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","path":"$context.path","status":"$context.status","protocol":"$context.protocol","responseLatencyMs":"$context.responseLatency","integrationLatencyMs":"$context.integrationLatency","responseLength":"$context.responseLength","apiVersion":"$context.request.header.Api-Version","userAgent":"$context.identity.userAgent","sourceIp":"$context.identity.sourceIp","oauthClientId":"$context.authorizer.claims.client_id","errorMessage":"$context.error.message"}
+          {"requestId":"$context.requestId","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","path":"$context.path","status":"$context.status","protocol":"$context.protocol","responseLatencyMs":"$context.responseLatency","integrationLatencyMs":"$context.integrationLatency","responseLength":"$context.responseLength","userAgent":"$context.identity.userAgent","sourceIp":"$context.identity.sourceIp","oauthClientId":"$context.authorizer.claims.client_id","errorMessage":"$context.error.message"}
       MethodSettings:
         - HttpMethod: '*'
           ResourcePath: '/*'
