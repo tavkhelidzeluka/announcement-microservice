@@ -1,23 +1,17 @@
-# =============================================================================
 # AWS API Gateway bindings for the Announcements API.
 #
-# The published contract (../api/openapi.yaml) MUST stay
+# The published contract (../api/openapi.yaml) must stay
 # implementation-agnostic, so every `x-amazon-apigateway-*` extension lives
-# here instead and is merged in at build time by ../scripts/build_openapi.py.
+# here and is merged in at build time by ../scripts/build_openapi.py. The
+# merged document is what API Gateway imports, so the deployed API and the
+# published contract cannot drift apart.
 #
-# The merged document is what API Gateway imports, which means the deployed API
-# and the published contract can never drift apart: one file describes both.
-#
-# ${...} placeholders are substituted by the build script from values the
-# foundation stack has already exported.
-# =============================================================================
+# ${...} placeholders are filled from the foundation stack's outputs.
 
-# Body validation runs at the edge, before Lambda is ever invoked - a malformed
-# payload then costs an API Gateway request instead of a Lambda invocation.
-# Parameters are deliberately NOT validated here: the guidelines want a missing
-# Api-Key answered with 403, and a missing Api-Version with a
-# MISSING_API_VERSION 400, neither of which API Gateway's generic
-# BAD_REQUEST_PARAMETERS response can express. The handlers do that instead.
+# Body validation at the edge, so a malformed payload costs a gateway request
+# rather than a Lambda invocation. Parameters are deliberately not validated
+# here: a missing Api-Key must be 403 and a missing Api-Version must be
+# MISSING_API_VERSION, neither of which BAD_REQUEST_PARAMETERS can express.
 x-amazon-apigateway-request-validators:
   bodyOnly:
     validateRequestBody: true
@@ -58,13 +52,11 @@ paths:
         uri: >-
           arn:aws:apigateway:${AWS_REGION}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:${CREATE_FUNCTION_NAME}/invocations
 
-    # CORS preflight is served by API Gateway itself - a mock integration costs
-    # nothing and keeps browsers off the Lambda bill. The policy is
-    # deny-by-default: exactly one configured origin, and only the methods and
-    # headers this resource actually uses.
+    # Preflight is served by a mock integration, keeping browsers off the
+    # Lambda bill. Deny-by-default: one origin, and only the methods and
+    # headers this resource uses.
     options:
-      # Declared here so API Gateway allows the mock integration to map values
-      # onto them; merged into the 204 response the contract already defines.
+      # Declared so the mock integration may map values onto them.
       responses:
         '204':
           headers:
@@ -87,10 +79,9 @@ paths:
               method.response.header.Access-Control-Max-Age: "'3600'"
               method.response.header.Vary: "'Origin'"
 
-    # Any verb the contract does not define is answered with a guideline-shaped
-    # 405 (the guidelines require 405 for unsupported methods). Without this,
-    # API Gateway would answer 403 MISSING_AUTHENTICATION_TOKEN. Explicitly
-    # declared methods always win over this catch-all.
+    # Any verb the contract does not define gets a 405. Without this, API
+    # Gateway would answer 403 MISSING_AUTHENTICATION_TOKEN. Declared methods
+    # always win over this catch-all.
     x-amazon-apigateway-any-method:
       security: []
       responses:

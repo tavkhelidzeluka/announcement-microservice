@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 """Static checks that run without an AWS account.
 
-* the published contract is valid OpenAPI 3;
-* the merged contract (contract + AWS overlay) is still valid OpenAPI 3;
+* the published contract, and the merged contract, are valid OpenAPI 3;
+* the published contract carries no AWS-specific extension;
 * both CloudFormation templates parse, and every Fn::ImportValue in the API
-  stack matches an export the foundation stack actually publishes;
-* the published contract mentions no AWS-specific extension, which is the
-  guideline that the split into contract + overlay exists to satisfy.
+  stack matches an export the foundation stack publishes.
 """
 import re
 import subprocess

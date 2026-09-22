@@ -1,29 +1,15 @@
 """DynamoDB access.
 
-Table design
-------------
-The table is keyed on ``announcementId`` (a UUID), which is what a future
-get-by-id would use. Listing needs a different access pattern - "all
-announcements, newest first" - so it is served by a global secondary index:
+The table is keyed on ``announcementId``. Listing needs a different access
+pattern, so it is served by a global secondary index keyed on a constant
+``listPartition`` with ``"<announcementDate>#<announcementId>"`` as the sort
+key: ordering stays total when two announcements share a timestamp, which is
+what lets a cursor point at exactly one row.
 
-    listPartition (HASH)  = "ALL"
-    announcementDateId (RANGE) = "<announcementDate>#<announcementId>"
+The reserved ``__stats__`` item holds the collection size. It carries no
+``listPartition``, so it never appears in the index or in a list response.
 
-Because the sort key ends in the UUID, ordering is total and stable even when
-two announcements share a timestamp, which is what makes a cursor point at
-exactly one row.
-
-The single-value partition key is a deliberate simplification: announcements
-are a low-volume, read-heavy collection, so one partition (10 GB, 3 000 RCU)
-is ample and it keeps "list everything in date order" a single ``Query``.
-``docs/architecture.md`` describes the date-bucketed variant to move to if that
-ever stops being true.
-
-The item under the reserved id ``__stats__`` holds the collection size. It is
-updated in the same transaction as the announcement, so ``meta.count`` is
-exact rather than an eventually-consistent estimate. It carries no
-``listPartition`` attribute and therefore never appears in the index, and so
-never in a list response.
+See ``docs/architecture.md`` for the scaling limit of the single partition.
 """
 import os
 
@@ -93,9 +79,7 @@ class AnnouncementRepository(object):
                     "Put": {
                         "TableName": self.table_name,
                         "Item": item,
-                        # A UUID collision is vanishingly unlikely, but a
-                        # silent overwrite of somebody else's announcement is
-                        # not a failure mode worth leaving open.
+                        # Never silently overwrite an existing announcement.
                         "ConditionExpression": "attribute_not_exists(announcementId)",
                     }
                 },

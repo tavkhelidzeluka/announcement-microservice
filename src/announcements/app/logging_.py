@@ -1,7 +1,5 @@
-"""Structured logging.
-
-One JSON object per line so CloudWatch Logs Insights can query on any field,
-and so the metric filter that drives the error alarm can key on ``level``.
+"""Structured logging: one JSON object per line, so Logs Insights can query
+any field and the error alarm's metric filter can key on ``level``.
 
 Request payloads, Api-Key values and access tokens are never logged.
 """
@@ -40,8 +38,8 @@ class JsonFormatter(logging.Formatter):
 def get_logger(name="announcements"):
     logger = logging.getLogger(name)
     if not getattr(logger, "_json_configured", False):
-        # Lambda pre-installs a handler on the root logger; replace its
-        # formatter rather than adding a second handler and double logging.
+        # Lambda pre-installs a root handler; replace rather than add, or
+        # every line is logged twice.
         handler = logging.StreamHandler(sys.stdout)
         handler.setFormatter(JsonFormatter())
         logger.handlers = [handler]

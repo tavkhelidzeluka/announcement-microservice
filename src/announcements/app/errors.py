@@ -1,13 +1,10 @@
 """Error model.
 
-Error payloads follow the JSON API error object shape, and the ``code`` member
-is drawn from the standard PIL error code list (RESTful API Guidelines,
-Appendix A - Reserved names / Standard errors).
+Payloads follow the JSON API error object shape, with ``code`` drawn from the
+standard PIL error list (guidelines, Appendix A).
 
-``ApiError`` is the single way a handler signals failure. Anything else that
-escapes a handler is converted into an opaque ``SERVER_ERROR`` so that no
-internal failure detail ever reaches a client (guidelines, "Hide internal error
-details").
+``ApiError`` is the only way a handler signals failure; anything else becomes
+an opaque ``SERVER_ERROR``, so no internal detail reaches a client.
 """
 
 
@@ -35,11 +32,8 @@ class ApiError(Exception):
 
 
 class ApiErrors(ApiError):
-    """Several failures reported together.
-
-    JSON API models ``errors`` as an array, so validating a payload once and
-    reporting everything that is wrong with it is both cheaper for the client
-    and friendlier than failing on the first problem.
+    """Several failures reported together, since JSON API models ``errors``
+    as an array and a client should learn about all of them at once.
     """
 
     def __init__(self, errors):

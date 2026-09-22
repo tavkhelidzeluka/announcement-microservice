@@ -1,20 +1,14 @@
-"""Runtime configuration, read once per execution environment.
+"""Runtime configuration.
 
-Everything that varies per environment arrives through Lambda environment
-variables so that the same artefact can be promoted from dev to production
-unchanged.
+Everything environment-specific arrives through Lambda environment variables,
+so the same artefact is promoted from dev to production unchanged.
 """
 import os
 
-#: Major version of the API contract this deployment implements. Clients must
-#: send it in the ``Api-Version`` header (RESTful API Guidelines, "API
-#: versioning": API's MUST reject client requests when no version is included
-#: or when an invalid or unsupported version is included).
+#: Major version clients must send in the ``Api-Version`` header.
 SUPPORTED_API_VERSION = "1"
 
-#: Server defined pagination defaults. The guidelines require a default *and* a
-#: maximum page size so that neither the client nor the service can be forced
-#: into an unbounded read.
+#: Server defined page size: a default and a hard maximum, both required.
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 100
 
@@ -39,11 +33,7 @@ def api_key_secret_id():
 
 
 def allowed_origin():
-    """Single allowed CORS origin.
-
-    CORS is deny-by-default: when no origin is configured, no
-    ``Access-Control-Allow-Origin`` header is ever emitted.
-    """
+    """Single allowed CORS origin. Unset means no origin is ever echoed."""
     return os.environ.get("ALLOWED_ORIGIN", "").strip()
 
 

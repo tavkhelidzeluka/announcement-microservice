@@ -28,8 +28,8 @@ Parameters:
     Default: v1
     AllowedPattern: '^[a-zA-Z0-9_-]{1,32}$'
     Description: >-
-      API Gateway stage. The API version itself travels in the Api-Version
-      header, not the URL, so this only names the deployment stage.
+      Deployment stage only. The API version travels in the Api-Version
+      header, never in the URL.
 
   OpenApiBucket:
     Type: String
@@ -38,18 +38,17 @@ Parameters:
   OpenApiKey:
     Type: String
     Description: >-
-      S3 key of the merged OpenAPI document. The key contains a hash of the
-      document, so any contract change produces a new key and CloudFormation
-      re-imports the API instead of silently keeping the old definition.
+      S3 key of the merged OpenAPI document. It contains a hash of the
+      document, so a contract change produces a new key and CloudFormation
+      re-imports rather than keeping the old definition.
 
   ThrottleRateLimit:
     Type: Number
     Default: 50
     MinValue: 1
     Description: >-
-      Steady-state requests per second allowed by the stage. Rate limiting is
-      required by the guidelines to blunt denial-of-service and brute force
-      attempts; exceeding it yields 429.
+      Steady-state requests per second allowed by the stage. Exceeding it
+      yields 429.
 
   ThrottleBurstLimit:
     Type: Number
@@ -62,9 +61,8 @@ Parameters:
     Default: 'true'
     AllowedValues: ['true', 'false']
     Description: >-
-      Whether to set the account-wide API Gateway CloudWatch Logs role. This is
-      an account-level setting, so set it to false if another stack in this
-      account already owns it.
+      Sets the account-wide API Gateway CloudWatch Logs role. Set false if
+      another stack in this account already owns it.
 
   LogRetentionInDays:
     Type: Number
@@ -76,9 +74,8 @@ Parameters:
     Default: https://www.philips.com
     AllowedPattern: '^https://[a-zA-Z0-9.-]+(:[0-9]+)?$'
     Description: >-
-      Browser origin allowed to read error responses cross-origin. The deploy
-      script feeds this from the foundation stack output so the two stacks
-      cannot disagree.
+      Browser origin allowed to read error responses cross-origin. Fed from
+      the foundation stack output, so the two stacks cannot disagree.
 
 # -----------------------------------------------------------------------------
 Conditions:
@@ -96,11 +93,9 @@ Resources:
       Description: !Sub 'Announcements API (${EnvironmentName})'
       EndpointConfiguration:
         Types: [REGIONAL]
-      # The guidelines require gzip support, and require that it is only
-      # applied when the client asked for it - which is exactly API Gateway's
-      # behaviour once compression is enabled.
+      # gzip, applied only when the client asks for it.
       MinimumCompressionSize: 1024
-      # The contract is the deployment. Nothing about the API is defined here
+      # The contract is the deployment: nothing about the API is defined here
       # that is not in the OpenAPI document.
       BodyS3Location:
         Bucket: !Ref OpenApiBucket
@@ -117,8 +112,7 @@ Resources:
         Fn::ImportValue: !Sub '${FoundationStackName}-ListFunctionArn'
       Action: lambda:InvokeFunction
       Principal: apigateway.amazonaws.com
-      # Scoped to this API and this method only, so a second API in the account
-      # cannot invoke the handler.
+      # Scoped to this API and method, so no other API can invoke the handler.
       SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApi}/*/GET/announcements'
 
   CreateFunctionPermission:
@@ -147,7 +141,7 @@ Resources:
 
   Stage:
     Type: AWS::ApiGateway::Stage
-    # Access logging silently no-ops until the account-level role exists.
+    # Stage creation fails if the account-level logging role is not yet set.
     DependsOn: ApiGatewayAccount
     Properties:
       RestApiId: !Ref RestApi
@@ -156,17 +150,14 @@ Resources:
       TracingEnabled: true
       AccessLogSetting:
         DestinationArn: !GetAtt AccessLogGroup.Arn
-        # JSON, so CloudWatch Logs Insights can query it without regexes.
-        # No request or response bodies, and no Api-Key or Authorization
-        # header, ever.
+        # JSON for Logs Insights. Never bodies, Api-Key or Authorization.
         Format: >-
           {"requestId":"$context.requestId","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","path":"$context.path","status":"$context.status","protocol":"$context.protocol","responseLatencyMs":"$context.responseLatency","integrationLatencyMs":"$context.integrationLatency","responseLength":"$context.responseLength","apiVersion":"$context.request.header.Api-Version","userAgent":"$context.identity.userAgent","sourceIp":"$context.identity.sourceIp","oauthClientId":"$context.authorizer.claims.client_id","errorMessage":"$context.error.message"}
       MethodSettings:
         - HttpMethod: '*'
           ResourcePath: '/*'
           MetricsEnabled: true
-          # INFO gives execution logs; data tracing is deliberately off so that
-          # payloads and credentials never reach CloudWatch.
+          # Data tracing off, so payloads and credentials never reach logs.
           LoggingLevel: INFO
           DataTraceEnabled: false
           ThrottlingRateLimit: !Ref ThrottleRateLimit
@@ -194,20 +185,15 @@ Resources:
     Properties:
       CloudWatchRoleArn: !GetAtt ApiGatewayCloudWatchRole.Arn
 
-  # ---------------------------------------------------------------------
-  # Gateway responses
-  #
-  # Anything API Gateway rejects before the handler runs would otherwise be
-  # answered with an AWS-shaped {"message": "..."} body. These map every such
-  # case onto the JSON API error document and the standard PIL error codes, so
-  # a client parses one error format no matter where the request died.
-  # ---------------------------------------------------------------------
-  # Note on duplication: CloudFormation does not support YAML anchors, so the
-  # header block is repeated per response type rather than shared.
+  # --- Gateway responses -----------------------------------------------
+  # Rejections that never reach a handler would otherwise return an AWS-shaped
+  # {"message": "..."} body. These map each one onto the JSON API error
+  # document, so a client parses one error format wherever the request died.
+  # The header block is repeated per type because CloudFormation does not
+  # support YAML anchors.
 
-  # Backstop for any 4xx API Gateway raises that is not handled explicitly
-  # below. The original status line is preserved - only the body is rewritten -
-  # which is why this one document carries no "status" member.
+  # Backstop for any 4xx not handled explicitly below. The original status
+  # line is preserved, which is why this body carries no "status" member.
   DefaultClientErrorResponse:
     Type: AWS::ApiGateway::GatewayResponse
     Properties:
@@ -244,9 +230,8 @@ Resources:
         gatewayresponse.header.Content-Type: "'application/json'"
         gatewayresponse.header.Cache-Control: "'no-store'"
         gatewayresponse.header.Access-Control-Allow-Origin: !Sub "'${AllowedOrigin}'"
-      # validationErrorString is generated from our own published schema, so it
-      # tells the client what the contract expects without leaking anything
-      # about the implementation behind it.
+      # validationErrorString comes from our own published schema, so it
+      # leaks nothing about the implementation.
       ResponseTemplates:
         application/json: |-
           {"errors":[{"id":"$context.requestId","status":"400","code":"INVALID_PARAMETER_VALUE","title":"Invalid parameter value","detail":"$util.escapeJavaScript($context.error.validationErrorString)","source":{"pointer":"/data"}}],"meta":{"requestId":"$context.requestId"}}
@@ -280,8 +265,7 @@ Resources:
         application/json: |-
           {"errors":[{"id":"$context.requestId","status":"401","code":"UNAUTHORIZED","title":"Unauthorized","detail":"A valid access token is required for this operation."}],"meta":{"requestId":"$context.requestId"}}
 
-  # API Gateway defaults EXPIRED_TOKEN to 403; RFC 6750 says an expired bearer
-  # token is a 401 with invalid_token, so it is remapped here.
+  # API Gateway defaults this to 403; RFC 6750 makes it a 401 invalid_token.
   ExpiredTokenResponse:
     Type: AWS::ApiGateway::GatewayResponse
     Properties:
@@ -328,10 +312,9 @@ Resources:
         application/json: |-
           {"errors":[{"id":"$context.requestId","status":"403","code":"INSUFFICIENT_SCOPE","title":"Insufficient scope","detail":"The access token does not carry the announcements/write scope."}],"meta":{"requestId":"$context.requestId"}}
 
-  # API Gateway raises MISSING_AUTHENTICATION_TOKEN for a path that does not
-  # exist at all, which is a 404 as far as a client is concerned. Unsupported
-  # *methods* on /announcements never reach here - the catch-all ANY method in
-  # the contract answers those with a 405.
+  # Raised for a path that does not exist, which is a 404 to a client.
+  # Unsupported *methods* never reach here: the contract's catch-all ANY
+  # method answers those with a 405.
   UnknownResourceResponse:
     Type: AWS::ApiGateway::GatewayResponse
     Properties:
@@ -455,9 +438,7 @@ Resources:
       TreatMissingData: notBreaching
       AlarmActions: [{'Fn::ImportValue': !Sub '${FoundationStackName}-AlertsTopicArn'}]
 
-  # A burst of 4xx usually means a client was released against the wrong
-  # contract, or somebody is probing for keys. Both are worth a look, so this
-  # alarms on the *ratio* rather than a raw count that scales with traffic.
+  # Alarms on the ratio, not a raw count that would scale with traffic.
   ApiClientErrorRateAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
@@ -588,8 +569,8 @@ Outputs:
 
   InvokeUrl:
     Description: >-
-      Base URL of the deployed API. In a real PIL deployment this sits behind a
-      custom domain matching https://{host}.api.philips.com/communications.
+      Base URL of the deployed API. In production this sits behind a custom
+      domain matching https://{host}.api.philips.com/communications.
     Value: !Sub 'https://${RestApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${StageName}'
     Export: { Name: !Sub '${AWS::StackName}-InvokeUrl' }
 

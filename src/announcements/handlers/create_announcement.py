@@ -1,8 +1,7 @@
-"""POST /announcements - create an announcement.
+"""POST /announcements.
 
-Private operation: API Gateway has already validated the OAuth 2.0 access
-token and the ``announcements/write`` scope through the Cognito authorizer
-before this code runs, so the handler only deals with the payload.
+Private: the Cognito authorizer has already validated the access token and the
+``announcements/write`` scope, so this handler only deals with the payload.
 """
 import uuid
 
@@ -26,8 +25,7 @@ def repository():
 def handler(request, client_id):
     attributes = validation.parse_create_document(request.json_body())
 
-    # RFC 4122 UUID: the guidelines explicitly allow it, and a server assigned
-    # opaque id keeps the ordering key free of business meaning.
+    # Server assigned RFC 4122 UUID, so the ordering key carries no meaning.
     announcement_id = str(uuid.uuid4())
     resource = repository().create(
         announcement_id, attributes, created_by=request.client_id or client_id

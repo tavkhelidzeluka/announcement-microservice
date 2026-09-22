@@ -1,9 +1,5 @@
-"""The cross-cutting behaviour every endpoint shares.
-
-Wrapping the handlers in one decorator keeps the guideline obligations -
-client identification, version negotiation, content negotiation, error
-shielding, structured access logging - in a single reviewable place instead of
-duplicated per endpoint.
+"""Cross-cutting behaviour shared by every endpoint: client identification,
+version and content negotiation, error shielding and access logging.
 """
 import functools
 import time
@@ -44,7 +40,7 @@ def api_handler(expects_body=False):
                 return result
             except Exception:
                 # Nothing internal escapes: the client gets an opaque 500
-                # carrying only the request id, the detail stays in the log.
+                # carrying only the request id.
                 logger.exception(
                     "Unhandled error while processing request",
                     extra={

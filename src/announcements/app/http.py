@@ -8,12 +8,7 @@ from . import errors
 
 
 class Headers(object):
-    """Case-insensitive view over the request headers.
-
-    HTTP header names are case-insensitive (RFC 7230) even though the
-    guidelines mandate Train-Case on the wire, so lookups must not depend on
-    the casing a particular client happens to use.
-    """
+    """Case-insensitive view over the request headers (RFC 7230)."""
 
     def __init__(self, raw):
         self._values = {}
@@ -71,11 +66,8 @@ class Request(object):
 
 
 def negotiate(request, expects_body):
-    """Content negotiation, per the guidelines' "Content type" rules.
-
-    * An ``Accept`` header that cannot be satisfied yields 406.
-    * A request body in anything other than JSON yields 415.
-    * Both headers are optional and default to ``application/json``.
+    """Content negotiation: 406 on an unsatisfiable ``Accept``, 415 on a
+    non-JSON body. Both headers are optional and default to JSON.
     """
     accept = request.headers.get("Accept")
     if accept and not _accepts_json(accept):
@@ -92,7 +84,7 @@ def _accepts_json(accept):
         media_type = entry.split(";")[0].strip().lower()
         if media_type in ("*/*", "application/*", config.JSON_MEDIA_TYPE):
             return True
-        # application/vnd.api+json and friends are close enough to serve JSON.
+        # application/vnd.api+json and friends.
         if media_type.startswith("application/") and media_type.endswith("+json"):
             return True
     return False
@@ -109,8 +101,7 @@ def etag_for(document):
 
 
 def serialise(document):
-    # Sorted keys keep the ETag stable across invocations; the compact
-    # separators keep the payload (and therefore the bill) small.
+    # Sorted keys keep the ETag stable across invocations.
     return json.dumps(document, sort_keys=True, separators=(",", ":"))
 
 

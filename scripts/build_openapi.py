@@ -1,17 +1,14 @@
 #!/usr/bin/env python3
 """Merge the vendor-neutral API contract with its AWS API Gateway bindings.
 
-    api/openapi.yaml                        the published contract, no AWS in it
+    api/openapi.yaml                        the published contract, no AWS
   + infrastructure/openapi-aws-overlay.yaml the x-amazon-apigateway-* bindings
   = build/openapi.aws.yaml                  what API Gateway imports
 
-Keeping the two apart is what lets the contract satisfy the guideline that API
-definitions MUST be implementation/technology-agnostic while still being the
-single source of truth for the deployment: there is no second, hand-maintained
-description of the API that could drift.
+Keeping them apart lets the contract stay implementation-agnostic while still
+driving the deployment, so there is no second description of the API to drift.
 
-Placeholders of the form ``${NAME}`` in the overlay are filled from --set
-arguments, which the deploy script feeds from the foundation stack's outputs.
+``${NAME}`` placeholders are filled from --set arguments.
 """
 import argparse
 import hashlib
@@ -59,12 +56,10 @@ def substitute(text, values):
 def strip_api_key_scheme(document, scheme_name="apiKey"):
     """Remove the ``Api-Key`` security scheme from the copy API Gateway imports.
 
-    The scheme is correct and stays in the published contract, but on import
-    API Gateway reads *any* `apiKey` security scheme as a request for its own
-    usage-plan keys - which are hard-wired to the `x-api-key` header name that
-    the guidelines override with `Api-Key`. Importing it would therefore switch
-    on `apiKeyRequired` and reject every guideline-conforming request with a
-    403 before it reached the handler, which validates the header itself.
+    On import, API Gateway reads any `apiKey` scheme as a request for its own
+    usage-plan keys, which are hard-wired to `x-api-key`. That would switch on
+    `apiKeyRequired` and 403 every conforming request before it reached the
+    handler that validates the header. The scheme stays in the contract.
     """
     schemes = (document.get("components") or {}).get("securitySchemes") or {}
     schemes.pop(scheme_name, None)
@@ -73,9 +68,8 @@ def strip_api_key_scheme(document, scheme_name="apiKey"):
         pruned = []
         for requirement in requirements or []:
             remaining = {k: v for k, v in requirement.items() if k != scheme_name}
-            # An empty requirement means "no security"; keep it only if the
-            # original was already empty, otherwise drop it so the remaining
-            # schemes on the operation still apply.
+            # An empty requirement means "no security": keep it only if the
+            # original was already empty.
             if remaining or not requirement:
                 pruned.append(remaining)
         return pruned
@@ -123,11 +117,8 @@ def main():
     merged = deep_merge(contract, overlay)
     strip_api_key_scheme(merged)
 
-    # API Gateway resolves `$ref` on import, but it rejects a document whose
-    # `servers` block still carries unresolved variables it does not
-    # understand. The deployed API is reached through its own invoke URL or a
-    # custom domain, so the canonical Philips servers block is documentation
-    # only and is dropped from the import copy.
+    # The canonical Philips `servers` block is documentation only; the
+    # deployed API is reached through its invoke URL or a custom domain.
     merged.pop("servers", None)
 
     body = yaml.safe_dump(merged, sort_keys=False, default_flow_style=False, width=120)

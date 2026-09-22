@@ -120,35 +120,23 @@ standard error list:
 
 ---
 
-## How the OpenAPI contract drives the Lambda deployment
+## The contract is the deployment
 
-This is the part that usually trips people up, so it is worth being explicit.
-
-**You do not write the API twice.** API Gateway can *be defined by* an OpenAPI
-document: you hand it the document and it creates the resources, methods,
-models, request validators, authorizer and CORS configuration from it. The
-binding between an operation and a Lambda function is an AWS vendor extension
-inside the document, `x-amazon-apigateway-integration`:
+API Gateway is *defined by* the OpenAPI document: it creates the resources,
+methods, models, validators, authorizer and CORS configuration from it. Each
+operation is bound to its Lambda by an AWS vendor extension:
 
 ```yaml
-paths:
-  /announcements:
-    get:
-      x-amazon-apigateway-integration:
-        type: aws_proxy          # "proxy": the whole HTTP request is passed
-        httpMethod: POST         # always POST — this is how Lambda is *invoked*,
-                                 # not the method the client used
-        uri: arn:aws:apigateway:eu-west-1:lambda:path/2015-03-31/functions/<fn-arn>/invocations
+get:
+  x-amazon-apigateway-integration:
+    type: aws_proxy          # the whole HTTP request is handed to the function
+    httpMethod: POST         # how Lambda is invoked, not the client's method
+    uri: arn:aws:apigateway:eu-west-1:lambda:path/.../functions/<fn-arn>/invocations
 ```
 
-With `aws_proxy`, API Gateway hands the function an event describing the
-request and expects `{statusCode, headers, body}` back. There is no per-field
-mapping template to maintain.
-
-**But the guidelines say an API definition MUST be
-implementation/technology-agnostic** — and a document full of `arn:aws:...` is
-the opposite of that. So the two concerns are kept in separate files and merged
-at build time:
+The guidelines also require an API definition to be
+implementation-agnostic, and a document full of `arn:aws:...` is not. So the
+two concerns live in separate files and are merged at build time:
 
 ```mermaid
 flowchart TB
@@ -182,32 +170,16 @@ flowchart TB
     class s3,live out
 ```
 
-```yaml
-RestApi:
-  Type: AWS::ApiGateway::RestApi
-  Properties:
-    BodyS3Location:
-      Bucket: !Ref OpenApiBucket
-      Key: !Ref OpenApiKey     # key contains a hash of the document
-```
+The deployed API is generated from the published contract, so the two cannot
+drift; `make validate` fails the build if an `x-amazon-*` extension ever leaks
+into `api/openapi.yaml`.
 
-Three things fall out of this:
-
-1. **The contract cannot drift from the deployment**, because the deployment is
-   generated from the contract. There is no second description of the API.
-2. **The published contract stays clean.** `make validate` fails the build if
-   an `x-amazon-*` extension ever leaks into `api/openapi.yaml`.
-3. **The document is the review artefact.** Reviewing `api/openapi.yaml` is
-   reviewing the API.
-
-`scripts/build_openapi.py` also strips the `apiKey` security scheme from the
-copy API Gateway imports. That scheme is correct in the contract — the
-guidelines mandate an `Api-Key` header — but on import API Gateway reads *any*
-`apiKey` scheme as a request for its own usage-plan keys, which are hard-wired
-to `x-api-key`. Importing it would reject every guideline-conforming request
-with a 403 before it reached the handler.
-
----
+The build step also strips the `apiKey` security scheme from the copy API
+Gateway imports. The scheme is correct in the contract — the guidelines mandate
+an `Api-Key` header — but on import API Gateway reads any `apiKey` scheme as a
+request for its own usage-plan keys, which are hard-wired to `x-api-key`.
+Importing it would reject every conforming request with a 403 before it
+reached the handler.
 
 ## Why two stacks
 

@@ -9,7 +9,7 @@ _repository = None
 
 
 def repository():
-    """Built lazily and reused, so the DynamoDB client survives cold starts."""
+    """Built lazily and reused across invocations."""
     global _repository
     if _repository is None:
         _repository = AnnouncementRepository(config.table_name())
@@ -38,8 +38,7 @@ def handler(request, client_id):
         ),
     }
 
-    # Conditional GET: an unchanged collection costs the client nothing but a
-    # round trip, and costs us no bandwidth.
+    # Conditional GET: an unchanged collection costs no bandwidth.
     etag = http.etag_for(document)
     cache_control = "public, max-age={0}".format(config.list_cache_max_age())
     if request.headers.get("If-None-Match") == etag:
@@ -55,9 +54,8 @@ def handler(request, client_id):
 def _base_path(request):
     """Path the links are built on.
 
-    ``requestContext.path`` is the path as the caller actually requested it,
-    so the links keep working behind a custom domain with a base path mapping
-    as well as against a raw stage URL.
+    ``requestContext.path`` is the path as requested, so links keep working
+    behind a custom domain as well as against a raw stage URL.
     """
     context_path = (request.event.get("requestContext") or {}).get("path")
     return context_path or "{0}/announcements".format(config.SERVICE_BASE_PATH)

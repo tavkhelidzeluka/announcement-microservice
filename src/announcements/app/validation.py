@@ -1,12 +1,9 @@
 """Request payload validation.
 
-API Gateway already rejects payloads that do not match the JSON Schema in the
-OpenAPI document, which keeps malformed traffic off the Lambda bill. This layer
-runs anyway: it is the one that produces guideline-shaped errors with a JSON
-Pointer to the offending member, and it is what the unit tests exercise.
-
-All problems with a payload are reported in one response - JSON API models
-``errors`` as an array precisely so a client can fix everything in one go.
+API Gateway already rejects payloads that fail the contract's JSON Schema.
+This layer runs anyway: it is the one that produces a JSON Pointer to the
+offending member, and it reports every problem in one response rather than
+failing on the first.
 """
 import re
 from datetime import datetime
@@ -30,11 +27,7 @@ _ALLOWED_RESOURCE_MEMBERS = ("type", "attributes")
 
 
 def parse_create_document(document):
-    """Validate a create payload and return normalised attributes.
-
-    Returns a dict with ``title``, ``description`` and ``announcementDate``
-    (RFC 3339, normalised to UTC).
-    """
+    """Validate a create payload, returning attributes normalised to UTC."""
     if not isinstance(document, dict):
         raise errors.bad_request("The request body must be a JSON object.")
 
@@ -48,8 +41,7 @@ def parse_create_document(document):
             "data must be a JSON API resource object.", pointer="/data"
         )
 
-    # JSON API: a server that does not accept client generated ids must answer
-    # 403 rather than silently ignoring the id.
+    # JSON API requires 403 here, not a silent override of the server's id.
     if "id" in data:
         raise errors.client_generated_id_not_supported()
 
@@ -58,8 +50,7 @@ def parse_create_document(document):
         raise errors.missing_parameter(
             "The member type is required.", pointer="/data/type"
         )
-    # JSON API: a type that does not match the endpoint is a conflict, not a
-    # validation error.
+    # JSON API: a mismatched type is a conflict, not a validation error.
     if resource_type != config.RESOURCE_TYPE:
         raise errors.resource_type_mismatch(config.RESOURCE_TYPE)
 
@@ -104,9 +95,8 @@ def parse_create_document(document):
 def _unknown(names, pointer_template, noun):
     """Reject members the contract does not define.
 
-    The OpenAPI schemas set ``additionalProperties: false``; refusing unknown
-    members here too means a client learns about a typo straight away instead
-    of silently losing data.
+    Mirrors ``additionalProperties: false`` in the schemas, so a typo surfaces
+    instead of silently losing data.
     """
     return [
         errors.invalid_parameter_value(
@@ -190,9 +180,7 @@ def _validate_date_time(attributes, name, collected):
 def normalise_date_time(value):
     """Parse an RFC 3339 date-time and render it in UTC, or return ``None``.
 
-    The guidelines ask APIs to accept other timezone offsets but to normalise
-    to UTC. Storing one canonical representation also keeps the sort key of the
-    announcement date index consistent.
+    One canonical representation also keeps the date index sort key consistent.
     """
     match = _RFC3339.match(value.strip())
     if not match:

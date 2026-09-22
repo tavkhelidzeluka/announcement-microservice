@@ -1,14 +1,9 @@
-"""Client identification.
+"""Client identification through the ``Api-Key`` header.
 
-The guidelines require every API method to identify its caller through an
-``Api-Key`` request header, and to answer 403 when that key is missing or
-invalid.
-
-API Gateway's built-in usage plan keys are not usable here because they are
-hard-wired to the ``x-api-key`` header name, which the guidelines override.
-The keys therefore live in Secrets Manager and are checked here, cached for the
-lifetime of the execution environment so the hot path stays a constant-time
-string comparison rather than a network call.
+API Gateway usage plan keys are unusable here: they are hard-wired to the
+``x-api-key`` header, which the guidelines override with ``Api-Key``. The keys
+live in Secrets Manager instead, cached per execution environment so the hot
+path is a string comparison rather than a network call.
 """
 import hmac
 import json
@@ -43,9 +38,8 @@ def _load_keys():
     secret = _secrets_client().get_secret_value(SecretId=config.api_key_secret_id())
     payload = json.loads(secret["SecretString"])
 
-    # The secret holds ``{"clientId": "...", "apiKey": "..."}`` today. Accepting
-    # a list keeps key rotation and multi-client onboarding a data change
-    # rather than a code change.
+    # Accepting a list as well as a single object keeps key rotation and
+    # multi-client onboarding a data change rather than a code change.
     if isinstance(payload, list):
         entries = payload
     else:
@@ -76,8 +70,7 @@ def identify_client(request):
         raise errors.missing_api_key()
 
     for known_key, client_id in _load_keys().items():
-        # Constant-time comparison: a timing oracle on an API key is still a
-        # credential leak.
+        # Constant time: a timing oracle on an API key is a credential leak.
         if hmac.compare_digest(supplied, known_key):
             return client_id
     raise errors.invalid_api_key()

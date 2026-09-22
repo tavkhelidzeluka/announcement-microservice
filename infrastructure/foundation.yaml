@@ -20,29 +20,28 @@ Parameters:
     Default: dev
     AllowedValues: [dev, tst, acc, stg, prod]
     Description: >-
-      Environment discriminator, matching the host ids in the PIL API
-      guidelines (dev / tst / acc / stg, with prod served from www).
+      Environment discriminator, matching the guidelines' host ids.
 
   AllowedOrigin:
     Type: String
     Default: https://www.philips.com
     AllowedPattern: '^https://[a-zA-Z0-9.-]+(:[0-9]+)?$'
     Description: >-
-      The single browser origin allowed to call this API cross-origin. CORS is
-      deny-by-default, so this is an explicit allow list of exactly one entry.
+      The one browser origin allowed to call this API cross-origin. CORS is
+      deny-by-default.
 
   AlarmEmail:
     Type: String
     Default: ''
     Description: >-
-      Optional email address subscribed to the alert topic. Leave empty to wire
-      the topic up to an existing on-call integration instead.
+      Optional email subscribed to the alert topic. Leave empty to wire the
+      topic to an existing on-call integration instead.
 
   LogRetentionInDays:
     Type: Number
     Default: 30
     AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 180, 365, 400, 545, 731, 1827, 3653]
-    Description: CloudWatch Logs retention. Logs are a real line on the bill.
+    Description: CloudWatch Logs retention.
 
   ListCacheMaxAgeSeconds:
     Type: Number
@@ -60,15 +59,15 @@ Parameters:
     Type: Number
     Default: -1
     Description: >-
-      Reserved concurrency for the list function, capping the blast radius of a
-      traffic spike on both DynamoDB and the bill. -1 leaves it unreserved.
+      Caps the blast radius of a traffic spike on DynamoDB and on the bill.
+      -1 leaves the function unreserved.
 
   CognitoDomainPrefix:
     Type: String
     Default: ''
     Description: >-
-      Globally unique prefix for the Cognito hosted domain that serves the
-      OAuth 2.0 token endpoint. Defaults to <service>-<env>-<account>.
+      Globally unique prefix for the domain serving the OAuth 2.0 token
+      endpoint. Defaults to <service>-<env>-<account>.
 
 # -----------------------------------------------------------------------------
 Conditions:
@@ -88,13 +87,10 @@ Resources:
     UpdateReplacePolicy: Retain
     Properties:
       TableName: !Sub '${ServiceName}-${EnvironmentName}'
-      # On-demand: an announcements feed is spiky and low volume, so paying per
-      # request beats paying for provisioned capacity that sits idle, and it
-      # removes autoscaling as a thing that can be wrong at 3am.
+      # Spiky, low volume traffic: per-request beats paying for idle capacity.
       BillingMode: PAY_PER_REQUEST
-      # Encrypted at rest with an AWS owned key by default - no SSESpecification
-      # block, because a customer managed key adds cost without adding a
-      # control this service needs.
+      # No SSESpecification: the default AWS owned key already encrypts at
+      # rest, and a customer managed key adds cost without adding a control.
       DeletionProtectionEnabled: !If [IsProduction, true, false]
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: true
@@ -109,10 +105,8 @@ Resources:
         - AttributeName: announcementId
           KeyType: HASH
       GlobalSecondaryIndexes:
-        # Serves "all announcements, newest first" as a single Query. The sort
-        # key is "<announcementDate>#<announcementId>", so ordering stays total
-        # even when two announcements share a timestamp - which is what lets a
-        # cursor identify exactly one row.
+        # Serves "all announcements in date order" as a single Query. The
+        # id suffix in the sort key keeps the ordering total.
         - IndexName: announcementDateIndex
           KeySchema:
             - AttributeName: listPartition
@@ -120,8 +114,7 @@ Resources:
             - AttributeName: announcementDateId
               KeyType: RANGE
           Projection:
-            # Items are a few hundred bytes, so projecting everything avoids a
-            # second read per row and costs almost nothing in storage.
+            # Items are small; projecting all avoids a second read per row.
             ProjectionType: ALL
       Tags:
         - { Key: Service, Value: !Ref ServiceName }
@@ -134,8 +127,8 @@ Resources:
       Name: !Sub '${ServiceName}/${EnvironmentName}/api-key'
       Description: >-
         Api-Key values accepted by the announcements API. API Gateway usage
-        plan keys cannot be used here because they are hard-wired to the
-        x-api-key header, which the PIL guidelines override with Api-Key.
+        plan keys are unusable: they are hard-wired to the x-api-key header,
+        which the guidelines override with Api-Key.
       GenerateSecretString:
         SecretStringTemplate: !Sub '{"clientId":"${ServiceName}-${EnvironmentName}-demo-client"}'
         GenerateStringKey: apiKey
@@ -150,8 +143,8 @@ Resources:
     Type: AWS::Cognito::UserPool
     Properties:
       UserPoolName: !Sub '${ServiceName}-${EnvironmentName}'
-      # No human users: this pool exists purely as an OAuth 2.0 authorization
-      # server for machine-to-machine clients publishing announcements.
+      # No human users: the pool is only an OAuth 2.0 authorization server
+      # for machine-to-machine publishing clients.
       AdminCreateUserConfig:
         AllowAdminCreateUserOnly: true
       Policies:
@@ -191,9 +184,8 @@ Resources:
       ClientName: !Sub '${ServiceName}-${EnvironmentName}-publisher'
       UserPoolId: !Ref UserPool
       GenerateSecret: true
-      # Client credentials: publishing an announcement is a back-office
-      # integration, not something an end user does in a browser, so there is
-      # no interactive flow and no refresh token to leak.
+      # Client credentials: publishing is a back-office integration, so there
+      # is no interactive flow and no refresh token to leak.
       AllowedOAuthFlows: [client_credentials]
       AllowedOAuthFlowsUserPoolClient: true
       AllowedOAuthScopes: ['announcements/write']
@@ -221,8 +213,8 @@ Resources:
       LogGroupName: !Sub '/aws/lambda/${ServiceName}-${EnvironmentName}-create'
       RetentionInDays: !Ref LogRetentionInDays
 
-  # Two roles rather than one shared role: the list path can only ever read,
-  # the create path can only ever write. Least privilege is cheap here.
+  # Two roles, not one: the list path can only read, the create path can only
+  # write.
   ListFunctionRole:
     Type: AWS::IAM::Role
     Properties:
@@ -269,8 +261,8 @@ Resources:
             Version: '2012-10-17'
             Statement:
               - Effect: Allow
-                # The announcement and the collection counter are written in one
-                # transaction, which is why UpdateItem sits next to PutItem.
+                # UpdateItem sits next to PutItem because the announcement and
+                # the counter are written in one transaction.
                 Action:
                   - dynamodb:PutItem
                   - dynamodb:UpdateItem
@@ -289,13 +281,12 @@ Resources:
     Type: AWS::Lambda::Function
     DependsOn: ListFunctionLogGroup
     Properties:
-      # An explicit, deterministic name is what lets the OpenAPI document
-      # reference the integration target before this stack has been deployed.
+      # Deterministic, so the OpenAPI document can name the integration
+      # target before this stack is deployed.
       FunctionName: !Sub '${ServiceName}-${EnvironmentName}-list'
       Description: GET /announcements
       Runtime: python3.12
-      # arm64 is roughly 20% cheaper per GB-second than x86_64 for identical
-      # pure-Python work.
+      # ~20% cheaper per GB-second than x86_64 for identical pure-Python work.
       Architectures: [arm64]
       Handler: announcements.handlers.list_announcements.handler
       Code: ../src
@@ -376,7 +367,7 @@ Resources:
       Endpoint: !Ref AlarmEmail
 
   # --- Alarms -----------------------------------------------------------
-  # Every alarm treats missing data as healthy: no traffic is not an incident.
+  # Missing data is healthy throughout: no traffic is not an incident.
   ListFunctionErrorsAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
@@ -415,9 +406,7 @@ Resources:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: !Sub '${ServiceName}-${EnvironmentName}-lambda-throttles'
-      AlarmDescription: >-
-        Lambda is shedding invocations - concurrency limit or reserved
-        concurrency is too low for current traffic.
+      AlarmDescription: Lambda is shedding invocations; concurrency is too low.
       Namespace: AWS/Lambda
       MetricName: Throttles
       Dimensions: [{ Name: FunctionName, Value: !Ref ListFunction }]
@@ -433,8 +422,7 @@ Resources:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: !Sub '${ServiceName}-${EnvironmentName}-list-latency'
-      AlarmDescription: >-
-        p95 list latency is drifting towards the 10s function timeout.
+      AlarmDescription: p95 list latency is drifting towards the 10s timeout.
       Namespace: AWS/Lambda
       MetricName: Duration
       Dimensions: [{ Name: FunctionName, Value: !Ref ListFunction }]
@@ -451,8 +439,8 @@ Resources:
     Properties:
       AlarmName: !Sub '${ServiceName}-${EnvironmentName}-table-throttles'
       AlarmDescription: >-
-        DynamoDB is throttling. On-demand tables throttle when traffic doubles
-        faster than the table can adapt, or when one partition runs hot.
+        DynamoDB is throttling: traffic grew faster than the on-demand table
+        could adapt, or a partition is hot.
       Namespace: AWS/DynamoDB
       MetricName: ThrottledRequests
       Dimensions: [{ Name: TableName, Value: !Ref AnnouncementsTable }]
@@ -480,9 +468,7 @@ Resources:
       TreatMissingData: notBreaching
       AlarmActions: [!Ref AlertsTopic]
 
-  # Structured logs make this possible: one metric filter over both functions'
-  # ERROR lines, so an unhandled exception pages someone even if the Errors
-  # metric is diluted by volume.
+  # Catches an unhandled exception even when volume dilutes the Errors metric.
   ListErrorLogMetricFilter:
     Type: AWS::Logs::MetricFilter
     Properties:
