@@ -1,0 +1,9 @@
+# Local tooling only. The Lambda functions themselves depend on nothing beyond
+# the boto3 that the Python 3.12 runtime already provides, so there is no layer
+# to build and no dependency to keep patched in the deployment package.
+boto3>=1.34
+botocore>=1.34
+moto[dynamodb,secretsmanager]>=5.0
+pytest>=8.0
+PyYAML>=6.0
+openapi-spec-validator>=0.7

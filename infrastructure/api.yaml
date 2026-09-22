@@ -1,0 +1,600 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Announcements microservice - API stack. Imports the merged OpenAPI document
+  from S3, so the deployed API Gateway resources, methods, models, validators
+  and authorizer are all generated from the same contract that is published to
+  consumers. Depends on the foundation stack for the Lambda targets, the
+  Cognito authorization server and the alert topic.
+
+# -----------------------------------------------------------------------------
+Parameters:
+# -----------------------------------------------------------------------------
+  FoundationStackName:
+    Type: String
+    Description: Name of the deployed foundation stack whose outputs are imported.
+
+  ServiceName:
+    Type: String
+    Default: announcements
+    AllowedPattern: '^[a-z][a-z0-9-]{2,24}$'
+
+  EnvironmentName:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, tst, acc, stg, prod]
+
+  StageName:
+    Type: String
+    Default: v1
+    AllowedPattern: '^[a-zA-Z0-9_-]{1,32}$'
+    Description: >-
+      API Gateway stage. The API version itself travels in the Api-Version
+      header, not the URL, so this only names the deployment stage.
+
+  OpenApiBucket:
+    Type: String
+    Description: S3 bucket holding the merged OpenAPI document.
+
+  OpenApiKey:
+    Type: String
+    Description: >-
+      S3 key of the merged OpenAPI document. The key contains a hash of the
+      document, so any contract change produces a new key and CloudFormation
+      re-imports the API instead of silently keeping the old definition.
+
+  ThrottleRateLimit:
+    Type: Number
+    Default: 50
+    MinValue: 1
+    Description: >-
+      Steady-state requests per second allowed by the stage. Rate limiting is
+      required by the guidelines to blunt denial-of-service and brute force
+      attempts; exceeding it yields 429.
+
+  ThrottleBurstLimit:
+    Type: Number
+    Default: 100
+    MinValue: 1
+    Description: Burst capacity on top of the steady-state rate.
+
+  ConfigureApiGatewayCloudWatchRole:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: >-
+      Whether to set the account-wide API Gateway CloudWatch Logs role. This is
+      an account-level setting, so set it to false if another stack in this
+      account already owns it.
+
+  LogRetentionInDays:
+    Type: Number
+    Default: 30
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 180, 365, 400, 545, 731, 1827, 3653]
+
+  AllowedOrigin:
+    Type: String
+    Default: https://www.philips.com
+    AllowedPattern: '^https://[a-zA-Z0-9.-]+(:[0-9]+)?$'
+    Description: >-
+      Browser origin allowed to read error responses cross-origin. The deploy
+      script feeds this from the foundation stack output so the two stacks
+      cannot disagree.
+
+# -----------------------------------------------------------------------------
+Conditions:
+# -----------------------------------------------------------------------------
+  ManageCloudWatchRole: !Equals [!Ref ConfigureApiGatewayCloudWatchRole, 'true']
+
+# -----------------------------------------------------------------------------
+Resources:
+# -----------------------------------------------------------------------------
+
+  RestApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub '${ServiceName}-${EnvironmentName}'
+      Description: !Sub 'Announcements API (${EnvironmentName})'
+      EndpointConfiguration:
+        Types: [REGIONAL]
+      # The guidelines require gzip support, and require that it is only
+      # applied when the client asked for it - which is exactly API Gateway's
+      # behaviour once compression is enabled.
+      MinimumCompressionSize: 1024
+      # The contract is the deployment. Nothing about the API is defined here
+      # that is not in the OpenAPI document.
+      BodyS3Location:
+        Bucket: !Ref OpenApiBucket
+        Key: !Ref OpenApiKey
+      Tags:
+        - { Key: Service, Value: !Ref ServiceName }
+        - { Key: Environment, Value: !Ref EnvironmentName }
+
+  # --- Permissions for API Gateway to invoke the handlers ---------------
+  ListFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName:
+        Fn::ImportValue: !Sub '${FoundationStackName}-ListFunctionArn'
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      # Scoped to this API and this method only, so a second API in the account
+      # cannot invoke the handler.
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApi}/*/GET/announcements'
+
+  CreateFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName:
+        Fn::ImportValue: !Sub '${FoundationStackName}-CreateFunctionArn'
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApi}/*/POST/announcements'
+
+  # --- Deployment and stage ---------------------------------------------
+  Deployment:
+    Type: AWS::ApiGateway::Deployment
+    Properties:
+      RestApiId: !Ref RestApi
+      Description: !Sub 'Imported from s3://${OpenApiBucket}/${OpenApiKey}'
+
+  AccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    UpdateReplacePolicy: Delete
+    DeletionPolicy: Delete
+    Properties:
+      LogGroupName: !Sub '/aws/apigateway/${ServiceName}-${EnvironmentName}'
+      RetentionInDays: !Ref LogRetentionInDays
+
+  Stage:
+    Type: AWS::ApiGateway::Stage
+    # Access logging silently no-ops until the account-level role exists.
+    DependsOn: ApiGatewayAccount
+    Properties:
+      RestApiId: !Ref RestApi
+      DeploymentId: !Ref Deployment
+      StageName: !Ref StageName
+      TracingEnabled: true
+      AccessLogSetting:
+        DestinationArn: !GetAtt AccessLogGroup.Arn
+        # JSON, so CloudWatch Logs Insights can query it without regexes.
+        # No request or response bodies, and no Api-Key or Authorization
+        # header, ever.
+        Format: >-
+          {"requestId":"$context.requestId","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","path":"$context.path","status":"$context.status","protocol":"$context.protocol","responseLatencyMs":"$context.responseLatency","integrationLatencyMs":"$context.integrationLatency","responseLength":"$context.responseLength","apiVersion":"$context.request.header.Api-Version","userAgent":"$context.identity.userAgent","sourceIp":"$context.identity.sourceIp","oauthClientId":"$context.authorizer.claims.client_id","errorMessage":"$context.error.message"}
+      MethodSettings:
+        - HttpMethod: '*'
+          ResourcePath: '/*'
+          MetricsEnabled: true
+          # INFO gives execution logs; data tracing is deliberately off so that
+          # payloads and credentials never reach CloudWatch.
+          LoggingLevel: INFO
+          DataTraceEnabled: false
+          ThrottlingRateLimit: !Ref ThrottleRateLimit
+          ThrottlingBurstLimit: !Ref ThrottleBurstLimit
+      Tags:
+        - { Key: Service, Value: !Ref ServiceName }
+        - { Key: Environment, Value: !Ref EnvironmentName }
+
+  ApiGatewayCloudWatchRole:
+    Type: AWS::IAM::Role
+    Condition: ManageCloudWatchRole
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: apigateway.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs'
+
+  ApiGatewayAccount:
+    Type: AWS::ApiGateway::Account
+    Condition: ManageCloudWatchRole
+    Properties:
+      CloudWatchRoleArn: !GetAtt ApiGatewayCloudWatchRole.Arn
+
+  # ---------------------------------------------------------------------
+  # Gateway responses
+  #
+  # Anything API Gateway rejects before the handler runs would otherwise be
+  # answered with an AWS-shaped {"message": "..."} body. These map every such
+  # case onto the JSON API error document and the standard PIL error codes, so
+  # a client parses one error format no matter where the request died.
+  # ---------------------------------------------------------------------
+  # Note on duplication: CloudFormation does not support YAML anchors, so the
+  # header block is repeated per response type rather than shared.
+
+  # Backstop for any 4xx API Gateway raises that is not handled explicitly
+  # below. The original status line is preserved - only the body is rewritten -
+  # which is why this one document carries no "status" member.
+  DefaultClientErrorResponse:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      RestApiId: !Ref RestApi
+      ResponseType: DEFAULT_4XX
+      ResponseParameters:
+        gatewayresponse.header.Content-Type: "'application/json'"
+        gatewayresponse.header.Cache-Control: "'no-store'"
+        gatewayresponse.header.Access-Control-Allow-Origin: !Sub "'${AllowedOrigin}'"
+      ResponseTemplates:
+        application/json: |-
+          {"errors":[{"id":"$context.requestId","code":"BAD_REQUEST","title":"Bad request","detail":"The request could not be processed as submitted."}],"meta":{"requestId":"$context.requestId"}}
+
+  DefaultServerErrorResponse:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      RestApiId: !Ref RestApi
+      ResponseType: DEFAULT_5XX
+      ResponseParameters:
+        gatewayresponse.header.Content-Type: "'application/json'"
+        gatewayresponse.header.Cache-Control: "'no-store'"
+        gatewayresponse.header.Access-Control-Allow-Origin: !Sub "'${AllowedOrigin}'"
+      ResponseTemplates:
+        application/json: |-
+          {"errors":[{"id":"$context.requestId","status":"500","code":"SERVER_ERROR","title":"Server error","detail":"The request could not be processed. Quote the error id when reporting this."}],"meta":{"requestId":"$context.requestId"}}
+
+  BadRequestBodyResponse:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      RestApiId: !Ref RestApi
+      ResponseType: BAD_REQUEST_BODY
+      StatusCode: '400'
+      ResponseParameters:
+        gatewayresponse.header.Content-Type: "'application/json'"
+        gatewayresponse.header.Cache-Control: "'no-store'"
+        gatewayresponse.header.Access-Control-Allow-Origin: !Sub "'${AllowedOrigin}'"
+      # validationErrorString is generated from our own published schema, so it
+      # tells the client what the contract expects without leaking anything
+      # about the implementation behind it.
+      ResponseTemplates:
+        application/json: |-
+          {"errors":[{"id":"$context.requestId","status":"400","code":"INVALID_PARAMETER_VALUE","title":"Invalid parameter value","detail":"$util.escapeJavaScript($context.error.validationErrorString)","source":{"pointer":"/data"}}],"meta":{"requestId":"$context.requestId"}}
+
+  BadRequestParametersResponse:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      RestApiId: !Ref RestApi
+      ResponseType: BAD_REQUEST_PARAMETERS
+      StatusCode: '400'
+      ResponseParameters:
+        gatewayresponse.header.Content-Type: "'application/json'"
+        gatewayresponse.header.Cache-Control: "'no-store'"
+        gatewayresponse.header.Access-Control-Allow-Origin: !Sub "'${AllowedOrigin}'"
+      ResponseTemplates:
+        application/json: |-
+          {"errors":[{"id":"$context.requestId","status":"400","code":"MISSING_PARAMETER","title":"Missing required parameter","detail":"$util.escapeJavaScript($context.error.validationErrorString)"}],"meta":{"requestId":"$context.requestId"}}
+
+  UnauthorizedResponse:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      RestApiId: !Ref RestApi
+      ResponseType: UNAUTHORIZED
+      StatusCode: '401'
+      ResponseParameters:
+        gatewayresponse.header.Content-Type: "'application/json'"
+        gatewayresponse.header.Cache-Control: "'no-store'"
+        gatewayresponse.header.WWW-Authenticate: "'Bearer realm=\"announcements\"'"
+        gatewayresponse.header.Access-Control-Allow-Origin: !Sub "'${AllowedOrigin}'"
+      ResponseTemplates:
+        application/json: |-
+          {"errors":[{"id":"$context.requestId","status":"401","code":"UNAUTHORIZED","title":"Unauthorized","detail":"A valid access token is required for this operation."}],"meta":{"requestId":"$context.requestId"}}
+
+  # API Gateway defaults EXPIRED_TOKEN to 403; RFC 6750 says an expired bearer
+  # token is a 401 with invalid_token, so it is remapped here.
+  ExpiredTokenResponse:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      RestApiId: !Ref RestApi
+      ResponseType: EXPIRED_TOKEN
+      StatusCode: '401'
+      ResponseParameters:
+        gatewayresponse.header.Content-Type: "'application/json'"
+        gatewayresponse.header.Cache-Control: "'no-store'"
+        gatewayresponse.header.WWW-Authenticate: "'Bearer realm=\"announcements\", error=\"invalid_token\"'"
+        gatewayresponse.header.Access-Control-Allow-Origin: !Sub "'${AllowedOrigin}'"
+      ResponseTemplates:
+        application/json: |-
+          {"errors":[{"id":"$context.requestId","status":"401","code":"UNAUTHORIZED","title":"Unauthorized","detail":"The access token has expired."}],"meta":{"requestId":"$context.requestId"}}
+
+  InvalidSignatureResponse:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      RestApiId: !Ref RestApi
+      ResponseType: INVALID_SIGNATURE
+      StatusCode: '401'
+      ResponseParameters:
+        gatewayresponse.header.Content-Type: "'application/json'"
+        gatewayresponse.header.Cache-Control: "'no-store'"
+        gatewayresponse.header.WWW-Authenticate: "'Bearer realm=\"announcements\", error=\"invalid_token\"'"
+        gatewayresponse.header.Access-Control-Allow-Origin: !Sub "'${AllowedOrigin}'"
+      ResponseTemplates:
+        application/json: |-
+          {"errors":[{"id":"$context.requestId","status":"401","code":"UNAUTHORIZED","title":"Unauthorized","detail":"The access token signature could not be verified."}],"meta":{"requestId":"$context.requestId"}}
+
+  # The Cognito authorizer rejected the token's scopes.
+  AccessDeniedResponse:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      RestApiId: !Ref RestApi
+      ResponseType: ACCESS_DENIED
+      StatusCode: '403'
+      ResponseParameters:
+        gatewayresponse.header.Content-Type: "'application/json'"
+        gatewayresponse.header.Cache-Control: "'no-store'"
+        gatewayresponse.header.WWW-Authenticate: "'Bearer realm=\"announcements\", error=\"insufficient_scope\", scope=\"announcements/write\"'"
+        gatewayresponse.header.Access-Control-Allow-Origin: !Sub "'${AllowedOrigin}'"
+      ResponseTemplates:
+        application/json: |-
+          {"errors":[{"id":"$context.requestId","status":"403","code":"INSUFFICIENT_SCOPE","title":"Insufficient scope","detail":"The access token does not carry the announcements/write scope."}],"meta":{"requestId":"$context.requestId"}}
+
+  # API Gateway raises MISSING_AUTHENTICATION_TOKEN for a path that does not
+  # exist at all, which is a 404 as far as a client is concerned. Unsupported
+  # *methods* on /announcements never reach here - the catch-all ANY method in
+  # the contract answers those with a 405.
+  UnknownResourceResponse:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      RestApiId: !Ref RestApi
+      ResponseType: MISSING_AUTHENTICATION_TOKEN
+      StatusCode: '404'
+      ResponseParameters:
+        gatewayresponse.header.Content-Type: "'application/json'"
+        gatewayresponse.header.Cache-Control: "'no-store'"
+        gatewayresponse.header.Access-Control-Allow-Origin: !Sub "'${AllowedOrigin}'"
+      ResponseTemplates:
+        application/json: |-
+          {"errors":[{"id":"$context.requestId","status":"404","code":"RESOURCE_NOT_FOUND","title":"Resource not found","detail":"The requested resource does not exist."}],"meta":{"requestId":"$context.requestId"}}
+
+  ResourceNotFoundResponse:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      RestApiId: !Ref RestApi
+      ResponseType: RESOURCE_NOT_FOUND
+      StatusCode: '404'
+      ResponseParameters:
+        gatewayresponse.header.Content-Type: "'application/json'"
+        gatewayresponse.header.Cache-Control: "'no-store'"
+        gatewayresponse.header.Access-Control-Allow-Origin: !Sub "'${AllowedOrigin}'"
+      ResponseTemplates:
+        application/json: |-
+          {"errors":[{"id":"$context.requestId","status":"404","code":"RESOURCE_NOT_FOUND","title":"Resource not found","detail":"The requested resource does not exist."}],"meta":{"requestId":"$context.requestId"}}
+
+  ThrottledResponse:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      RestApiId: !Ref RestApi
+      ResponseType: THROTTLED
+      StatusCode: '429'
+      ResponseParameters:
+        gatewayresponse.header.Content-Type: "'application/json'"
+        gatewayresponse.header.Cache-Control: "'no-store'"
+        gatewayresponse.header.Retry-After: "'1'"
+        gatewayresponse.header.Access-Control-Allow-Origin: !Sub "'${AllowedOrigin}'"
+      ResponseTemplates:
+        application/json: |-
+          {"errors":[{"id":"$context.requestId","status":"429","code":"TOO_MANY_REQUESTS","title":"Too many requests","detail":"Rate limit exceeded. Please retry later."}],"meta":{"requestId":"$context.requestId"}}
+
+  QuotaExceededResponse:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      RestApiId: !Ref RestApi
+      ResponseType: QUOTA_EXCEEDED
+      StatusCode: '429'
+      ResponseParameters:
+        gatewayresponse.header.Content-Type: "'application/json'"
+        gatewayresponse.header.Cache-Control: "'no-store'"
+        gatewayresponse.header.Access-Control-Allow-Origin: !Sub "'${AllowedOrigin}'"
+      ResponseTemplates:
+        application/json: |-
+          {"errors":[{"id":"$context.requestId","status":"429","code":"TOO_MANY_REQUESTS","title":"Too many requests","detail":"The quota for this client has been exhausted."}],"meta":{"requestId":"$context.requestId"}}
+
+  UnsupportedMediaTypeResponse:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      RestApiId: !Ref RestApi
+      ResponseType: UNSUPPORTED_MEDIA_TYPE
+      StatusCode: '415'
+      ResponseParameters:
+        gatewayresponse.header.Content-Type: "'application/json'"
+        gatewayresponse.header.Cache-Control: "'no-store'"
+        gatewayresponse.header.Access-Control-Allow-Origin: !Sub "'${AllowedOrigin}'"
+      ResponseTemplates:
+        application/json: |-
+          {"errors":[{"id":"$context.requestId","status":"415","code":"UNSUPPORTED_MEDIA_TYPE","title":"Unsupported media type","detail":"This API only consumes application/json."}],"meta":{"requestId":"$context.requestId"}}
+
+  RequestTooLargeResponse:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      RestApiId: !Ref RestApi
+      ResponseType: REQUEST_TOO_LARGE
+      StatusCode: '413'
+      ResponseParameters:
+        gatewayresponse.header.Content-Type: "'application/json'"
+        gatewayresponse.header.Cache-Control: "'no-store'"
+        gatewayresponse.header.Access-Control-Allow-Origin: !Sub "'${AllowedOrigin}'"
+      ResponseTemplates:
+        application/json: |-
+          {"errors":[{"id":"$context.requestId","status":"413","code":"BAD_REQUEST","title":"Payload too large","detail":"The request body exceeds the maximum accepted size."}],"meta":{"requestId":"$context.requestId"}}
+
+  # --- Alarms -----------------------------------------------------------
+  ApiServerErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ServiceName}-${EnvironmentName}-api-5xx'
+      AlarmDescription: The API is returning server errors.
+      Namespace: AWS/ApiGateway
+      MetricName: 5XXError
+      Dimensions:
+        - { Name: ApiName, Value: !Sub '${ServiceName}-${EnvironmentName}' }
+        - { Name: Stage, Value: !Ref StageName }
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [{'Fn::ImportValue': !Sub '${FoundationStackName}-AlertsTopicArn'}]
+      OKActions: [{'Fn::ImportValue': !Sub '${FoundationStackName}-AlertsTopicArn'}]
+
+  ApiLatencyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ServiceName}-${EnvironmentName}-api-latency'
+      AlarmDescription: p99 end-to-end API latency is above the 2s objective.
+      Namespace: AWS/ApiGateway
+      MetricName: Latency
+      Dimensions:
+        - { Name: ApiName, Value: !Sub '${ServiceName}-${EnvironmentName}' }
+        - { Name: Stage, Value: !Ref StageName }
+      ExtendedStatistic: p99
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 2000
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [{'Fn::ImportValue': !Sub '${FoundationStackName}-AlertsTopicArn'}]
+
+  # A burst of 4xx usually means a client was released against the wrong
+  # contract, or somebody is probing for keys. Both are worth a look, so this
+  # alarms on the *ratio* rather than a raw count that scales with traffic.
+  ApiClientErrorRateAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ServiceName}-${EnvironmentName}-api-4xx-rate'
+      AlarmDescription: More than a quarter of requests are being rejected.
+      Threshold: 0.25
+      EvaluationPeriods: 2
+      DatapointsToAlarm: 2
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [{'Fn::ImportValue': !Sub '${FoundationStackName}-AlertsTopicArn'}]
+      Metrics:
+        - Id: errorRate
+          Expression: IF(requests > 20, errors / requests, 0)
+          Label: 4xx rate
+          ReturnData: true
+        - Id: errors
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/ApiGateway
+              MetricName: 4XXError
+              Dimensions:
+                - { Name: ApiName, Value: !Sub '${ServiceName}-${EnvironmentName}' }
+                - { Name: Stage, Value: !Ref StageName }
+            Period: 300
+            Stat: Sum
+        - Id: requests
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/ApiGateway
+              MetricName: Count
+              Dimensions:
+                - { Name: ApiName, Value: !Sub '${ServiceName}-${EnvironmentName}' }
+                - { Name: Stage, Value: !Ref StageName }
+            Period: 300
+            Stat: Sum
+
+  # --- Dashboard --------------------------------------------------------
+  Dashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub '${ServiceName}-${EnvironmentName}'
+      DashboardBody: !Sub
+        - |
+          {
+            "widgets": [
+              {
+                "type": "metric", "x": 0, "y": 0, "width": 12, "height": 6,
+                "properties": {
+                  "title": "API traffic and errors",
+                  "region": "${AWS::Region}",
+                  "stat": "Sum", "period": 300, "view": "timeSeries",
+                  "metrics": [
+                    ["AWS/ApiGateway", "Count", "ApiName", "${ApiName}", "Stage", "${StageName}", {"label": "requests"}],
+                    [".", "4XXError", ".", ".", ".", ".", {"label": "4xx"}],
+                    [".", "5XXError", ".", ".", ".", ".", {"label": "5xx"}]
+                  ]
+                }
+              },
+              {
+                "type": "metric", "x": 12, "y": 0, "width": 12, "height": 6,
+                "properties": {
+                  "title": "API latency",
+                  "region": "${AWS::Region}",
+                  "period": 300, "view": "timeSeries",
+                  "metrics": [
+                    ["AWS/ApiGateway", "Latency", "ApiName", "${ApiName}", "Stage", "${StageName}", {"stat": "p50", "label": "p50"}],
+                    ["...", {"stat": "p99", "label": "p99"}],
+                    ["AWS/ApiGateway", "IntegrationLatency", "ApiName", "${ApiName}", "Stage", "${StageName}", {"stat": "p99", "label": "integration p99"}]
+                  ]
+                }
+              },
+              {
+                "type": "metric", "x": 0, "y": 6, "width": 12, "height": 6,
+                "properties": {
+                  "title": "Lambda",
+                  "region": "${AWS::Region}",
+                  "stat": "Sum", "period": 300, "view": "timeSeries",
+                  "metrics": [
+                    ["AWS/Lambda", "Invocations", "FunctionName", "${ListFunctionName}", {"label": "list invocations"}],
+                    [".", "Errors", ".", ".", {"label": "list errors"}],
+                    [".", "Throttles", ".", ".", {"label": "list throttles"}],
+                    [".", "Invocations", ".", "${CreateFunctionName}", {"label": "create invocations"}],
+                    [".", "Errors", ".", ".", {"label": "create errors"}]
+                  ]
+                }
+              },
+              {
+                "type": "metric", "x": 12, "y": 6, "width": 12, "height": 6,
+                "properties": {
+                  "title": "DynamoDB",
+                  "region": "${AWS::Region}",
+                  "stat": "Sum", "period": 300, "view": "timeSeries",
+                  "metrics": [
+                    ["AWS/DynamoDB", "ConsumedReadCapacityUnits", "TableName", "${TableName}", {"label": "RCU"}],
+                    [".", "ConsumedWriteCapacityUnits", ".", ".", {"label": "WCU"}],
+                    [".", "ThrottledRequests", ".", ".", {"label": "throttles"}]
+                  ]
+                }
+              },
+              {
+                "type": "log", "x": 0, "y": 12, "width": 24, "height": 6,
+                "properties": {
+                  "title": "Recent rejections and failures",
+                  "region": "${AWS::Region}",
+                  "query": "SOURCE '/aws/lambda/${ListFunctionName}' | SOURCE '/aws/lambda/${CreateFunctionName}' | fields @timestamp, level, httpMethod, statusCode, errorCode, requestId, durationMs | filter statusCode >= 400 | sort @timestamp desc | limit 50"
+                }
+              }
+            ]
+          }
+        - ApiName: !Sub '${ServiceName}-${EnvironmentName}'
+          ListFunctionName: {'Fn::ImportValue': !Sub '${FoundationStackName}-ListFunctionName'}
+          CreateFunctionName: {'Fn::ImportValue': !Sub '${FoundationStackName}-CreateFunctionName'}
+          TableName: {'Fn::ImportValue': !Sub '${FoundationStackName}-TableName'}
+
+# -----------------------------------------------------------------------------
+Outputs:
+# -----------------------------------------------------------------------------
+  RestApiId:
+    Value: !Ref RestApi
+    Export: { Name: !Sub '${AWS::StackName}-RestApiId' }
+
+  StageName:
+    Value: !Ref StageName
+    Export: { Name: !Sub '${AWS::StackName}-StageName' }
+
+  InvokeUrl:
+    Description: >-
+      Base URL of the deployed API. In a real PIL deployment this sits behind a
+      custom domain matching https://{host}.api.philips.com/communications.
+    Value: !Sub 'https://${RestApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${StageName}'
+    Export: { Name: !Sub '${AWS::StackName}-InvokeUrl' }
+
+  AnnouncementsUrl:
+    Value: !Sub 'https://${RestApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${StageName}/announcements'
+
+  DashboardUrl:
+    Value: !Sub 'https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${ServiceName}-${EnvironmentName}'

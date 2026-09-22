@@ -1,0 +1,9 @@
+.venv/
+build/
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
+# Never commit a filled-in Postman environment: it holds the Api-Key and the
+# OAuth client secret. Regenerate it with ./scripts/show_credentials.sh --json
+postman/*.local.json

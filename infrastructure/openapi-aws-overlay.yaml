@@ -1,0 +1,119 @@
+# =============================================================================
+# AWS API Gateway bindings for the Announcements API.
+#
+# The published contract (../api/openapi.yaml) MUST stay
+# implementation-agnostic, so every `x-amazon-apigateway-*` extension lives
+# here instead and is merged in at build time by ../scripts/build_openapi.py.
+#
+# The merged document is what API Gateway imports, which means the deployed API
+# and the published contract can never drift apart: one file describes both.
+#
+# ${...} placeholders are substituted by the build script from values the
+# foundation stack has already exported.
+# =============================================================================
+
+# Body validation runs at the edge, before Lambda is ever invoked - a malformed
+# payload then costs an API Gateway request instead of a Lambda invocation.
+# Parameters are deliberately NOT validated here: the guidelines want a missing
+# Api-Key answered with 403, and a missing Api-Version with a
+# MISSING_API_VERSION 400, neither of which API Gateway's generic
+# BAD_REQUEST_PARAMETERS response can express. The handlers do that instead.
+x-amazon-apigateway-request-validators:
+  bodyOnly:
+    validateRequestBody: true
+    validateRequestParameters: false
+
+x-amazon-apigateway-request-validator: bodyOnly
+
+components:
+  securitySchemes:
+    announcementsOAuth2:
+      x-amazon-apigateway-authtype: cognito_user_pools
+      x-amazon-apigateway-authorizer:
+        type: cognito_user_pools
+        providerARNs:
+          - ${USER_POOL_ARN}
+      flows:
+        clientCredentials:
+          tokenUrl: ${TOKEN_URL}
+          refreshUrl: ${TOKEN_URL}
+
+paths:
+  /announcements:
+    get:
+      x-amazon-apigateway-integration:
+        type: aws_proxy
+        httpMethod: POST
+        passthroughBehavior: when_no_match
+        timeoutInMillis: 10000
+        uri: >-
+          arn:aws:apigateway:${AWS_REGION}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:${LIST_FUNCTION_NAME}/invocations
+
+    post:
+      x-amazon-apigateway-integration:
+        type: aws_proxy
+        httpMethod: POST
+        passthroughBehavior: when_no_match
+        timeoutInMillis: 10000
+        uri: >-
+          arn:aws:apigateway:${AWS_REGION}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:${CREATE_FUNCTION_NAME}/invocations
+
+    # CORS preflight is served by API Gateway itself - a mock integration costs
+    # nothing and keeps browsers off the Lambda bill. The policy is
+    # deny-by-default: exactly one configured origin, and only the methods and
+    # headers this resource actually uses.
+    options:
+      # Declared here so API Gateway allows the mock integration to map values
+      # onto them; merged into the 204 response the contract already defines.
+      responses:
+        '204':
+          headers:
+            Access-Control-Allow-Origin: { schema: { type: string } }
+            Access-Control-Allow-Methods: { schema: { type: string } }
+            Access-Control-Allow-Headers: { schema: { type: string } }
+            Access-Control-Max-Age: { schema: { type: integer } }
+            Vary: { schema: { type: string } }
+      x-amazon-apigateway-integration:
+        type: mock
+        requestTemplates:
+          application/json: '{"statusCode": 204}'
+        responses:
+          default:
+            statusCode: '204'
+            responseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'${ALLOWED_ORIGIN}'"
+              method.response.header.Access-Control-Allow-Methods: "'GET, POST, OPTIONS'"
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type, Api-Key, Api-Version, Authorization, If-None-Match, Accept, Accept-Encoding'"
+              method.response.header.Access-Control-Max-Age: "'3600'"
+              method.response.header.Vary: "'Origin'"
+
+    # Any verb the contract does not define is answered with a guideline-shaped
+    # 405 (the guidelines require 405 for unsupported methods). Without this,
+    # API Gateway would answer 403 MISSING_AUTHENTICATION_TOKEN. Explicitly
+    # declared methods always win over this catch-all.
+    x-amazon-apigateway-any-method:
+      security: []
+      responses:
+        '405':
+          description: The HTTP method is not supported for this resource.
+          headers:
+            Allow: { schema: { type: string } }
+            Content-Type: { schema: { type: string } }
+            Cache-Control: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorDocument' }
+      x-amazon-apigateway-integration:
+        type: mock
+        requestTemplates:
+          application/json: '{"statusCode": 405}'
+        responses:
+          default:
+            statusCode: '405'
+            responseParameters:
+              method.response.header.Allow: "'GET, POST, OPTIONS'"
+              method.response.header.Content-Type: "'application/json'"
+              method.response.header.Cache-Control: "'no-store'"
+            responseTemplates:
+              application/json: |-
+                {"errors":[{"id":"$context.requestId","status":"405","code":"METHOD_NOT_ALLOWED","title":"Method not allowed","detail":"This resource supports GET, POST and OPTIONS."}],"meta":{"requestId":"$context.requestId"}}

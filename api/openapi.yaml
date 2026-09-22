@@ -1,0 +1,891 @@
+# =============================================================================
+# Announcements API - public contract
+#
+# This file is the SINGLE SOURCE OF TRUTH for the API and is deliberately kept
+# free of any implementation or vendor detail (RESTful API Guidelines,
+# "Implementation/technology-agnostic": API definitions MUST be documented in an
+# implementation/technology-agnostic way).
+#
+# The AWS API Gateway bindings (Lambda integrations, authorizers, validators)
+# live in ../infrastructure/openapi-aws-overlay.yaml and are merged into this
+# document at build time by ../scripts/build_openapi.py.
+# =============================================================================
+openapi: 3.0.3
+
+info:
+  title: Announcements API
+  description: |
+    Publishes and retrieves PIL announcements.
+
+    An announcement is a short, dated message (title, description, date) that is
+    published to consumers of PIL digital channels.
+
+    ## Conventions
+
+    This API follows the PIL RESTful API Guidelines. In particular:
+
+    * Every request MUST carry an `Api-Version` header holding the major API
+      version, and an `Api-Key` header identifying the calling client.
+    * Payloads follow the JSON API 1.0 document structure: a top level object
+      holding `data`, `errors`, `meta` and `links` members. `data` and `errors`
+      never coexist in the same document.
+    * Date-time values are RFC 3339 strings, normalised to UTC.
+    * Error payloads use the standard PIL error codes (see the `Error` schema).
+
+    ## Pagination
+
+    `GET /announcements` is cursor paginated. Clients SHOULD follow
+    `links.next` rather than constructing cursors themselves; a cursor is an
+    opaque, server-generated label for the first resource of a page and its
+    internal format is not part of this contract.
+
+    Page until `links.next` is absent. A page that ends exactly on the
+    collection boundary still carries a `next` link, so the last request of a
+    walk may come back with an empty `data` array; that is the end of the
+    collection, not an error.
+
+    ## Responses that apply to the whole API
+
+    Two responses are not attached to a single operation because they describe
+    what happens *outside* the operations declared here:
+
+    * any HTTP method other than `GET`, `POST` or `OPTIONS` on
+      `/announcements` is answered with `405 Method Not Allowed`;
+    * any path other than `/announcements` is answered with `404 Not Found`.
+
+    Both use the same error document as every other failure.
+
+    ## Caching
+
+    List responses carry `ETag` and `Cache-Control`. Clients SHOULD send
+    `If-None-Match` to save bandwidth; the API answers `304 Not Modified` when
+    the representation is unchanged.
+  version: 1.0.0
+  contact:
+    name: PIL Announcements service team
+    url: https://developer.philips.com
+  license:
+    name: Philips proprietary
+    url: https://www.philips.com/a-w/legal.html
+
+servers:
+  - url: https://{host}.api.philips.com/communications
+    description: |
+      Canonical PIL endpoint. Announcements is a *global* service: the
+      functionality and the data are identical in every region, so - per the
+      guidelines - the hostname carries no region identifier.
+    variables:
+      host:
+        default: www
+        description: Environment discriminator.
+        enum: [dev, tst, acc, stg, www]
+  - url: '{baseUrl}'
+    description: >
+      Deployment-specific base URL, used for environments that are not (yet)
+      fronted by the canonical PIL hostname.
+    variables:
+      baseUrl:
+        default: https://www.api.philips.com/communications
+
+tags:
+  - name: announcements
+    description: Announcements published to PIL digital channels.
+
+security:
+  - apiKey: []
+
+paths:
+  /announcements:
+    parameters:
+      - $ref: '#/components/parameters/ApiVersion'
+
+    get:
+      tags: [announcements]
+      summary: List announcements
+      description: |
+        Returns a page of announcements, most recent first by default.
+
+        When neither `limit` nor `cursor` is supplied the API returns the first
+        page using the server defined default page size (20). The maximum page
+        size is 100.
+      operationId: listAnnouncements
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Sort'
+        - $ref: '#/components/parameters/IfNoneMatch'
+        - $ref: '#/components/parameters/AcceptEncoding'
+      responses:
+        '200':
+          description: A page of announcements.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/CacheControl' }
+            ETag: { $ref: '#/components/headers/ETag' }
+            Content-Encoding: { $ref: '#/components/headers/ContentEncoding' }
+            Access-Control-Allow-Origin: { $ref: '#/components/headers/AccessControlAllowOrigin' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AnnouncementListDocument' }
+              examples:
+                firstPage: { $ref: '#/components/examples/AnnouncementListFirstPage' }
+                lastPage: { $ref: '#/components/examples/AnnouncementListLastPage' }
+        '304':
+          description: >
+            The representation matches the `If-None-Match` value supplied by the
+            client and has not been modified.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/CacheControl' }
+            ETag: { $ref: '#/components/headers/ETag' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '406': { $ref: '#/components/responses/NotAcceptable' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalServerError' }
+
+    post:
+      tags: [announcements]
+      summary: Create an announcement
+      description: |
+        Adds a new announcement.
+
+        This is a private operation: on top of the `Api-Key` client
+        identification required for every method, the caller MUST present an
+        OAuth 2.0 access token carrying the `announcements/write` scope.
+      operationId: createAnnouncement
+      security:
+        - apiKey: []
+          announcementsOAuth2: ['announcements/write']
+      parameters:
+        - $ref: '#/components/parameters/ContentType'
+      requestBody:
+        required: true
+        description: The announcement to create, as a JSON API document.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AnnouncementCreateDocument' }
+            example:
+              data:
+                type: announcements
+                attributes:
+                  title: Philips opens new Experience Centre in Amsterdam
+                  description: >-
+                    The new Experience Centre showcases connected care
+                    solutions and opens its doors on 1 March.
+                  announcementDate: '2026-03-01T09:00:00Z'
+      responses:
+        '201':
+          description: The announcement was created.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/CacheControlNoStore' }
+            Access-Control-Allow-Origin: { $ref: '#/components/headers/AccessControlAllowOrigin' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AnnouncementDocument' }
+              example:
+                data:
+                  type: announcements
+                  id: 9a5f3c1e-6b2d-4f8a-9c0e-1d2b3a4c5d6e
+                  attributes:
+                    title: Philips opens new Experience Centre in Amsterdam
+                    description: >-
+                      The new Experience Centre showcases connected care
+                      solutions and opens its doors on 1 March.
+                    announcementDate: '2026-03-01T09:00:00Z'
+                  meta:
+                    created: '2026-02-04T11:20:31Z'
+                    lastModified: '2026-02-04T11:20:31Z'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '406': { $ref: '#/components/responses/NotAcceptable' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalServerError' }
+
+    options:
+      tags: [announcements]
+      summary: CORS preflight
+      description: >
+        Returns the cross-origin resource sharing policy for this resource. The
+        policy is deny-by-default: only explicitly configured origins, methods
+        and headers are allowed.
+      operationId: preflightAnnouncements
+      security: []
+      parameters:
+        - name: Origin
+          in: header
+          required: true
+          description: Origin of the calling browser context.
+          schema: { type: string }
+        - name: Access-Control-Request-Method
+          in: header
+          required: true
+          description: HTTP method the client intends to use.
+          schema: { type: string }
+      responses:
+        '204':
+          description: The CORS policy for this resource.
+          headers:
+            Access-Control-Allow-Origin: { $ref: '#/components/headers/AccessControlAllowOrigin' }
+            Access-Control-Allow-Methods:
+              description: Methods allowed for cross-origin requests.
+              schema: { type: string }
+              example: GET, POST, OPTIONS
+            Access-Control-Allow-Headers:
+              description: Request headers allowed for cross-origin requests.
+              schema: { type: string }
+              example: Content-Type, Api-Key, Api-Version, Authorization, If-None-Match
+            Access-Control-Max-Age:
+              description: How long, in seconds, the preflight result may be cached.
+              schema: { type: integer }
+              example: 3600
+
+components:
+
+  # ---------------------------------------------------------------------------
+  # Security
+  # ---------------------------------------------------------------------------
+  securitySchemes:
+    apiKey:
+      type: apiKey
+      name: Api-Key
+      in: header
+      description: >
+        Client identification. Every API method requires an `Api-Key` header,
+        issued by the PIL API platform, so that usage can be monitored,
+        throttled and attributed per client. A missing or invalid key is
+        answered with `403`.
+    announcementsOAuth2:
+      type: oauth2
+      description: >
+        OAuth 2.0 client credentials grant against the PIL authorization
+        server. The access token is presented as a bearer token in the
+        `Authorization` header (RFC 6750).
+      flows:
+        clientCredentials:
+          tokenUrl: https://authorization-server.philips.com/oauth2/token
+          refreshUrl: https://authorization-server.philips.com/oauth2/token
+          scopes:
+            announcements/write: Create announcements.
+
+  # ---------------------------------------------------------------------------
+  # Parameters
+  # ---------------------------------------------------------------------------
+  parameters:
+    ApiVersion:
+      name: Api-Version
+      in: header
+      required: true
+      description: >
+        Major version of the API contract the client was built against.
+        Requests without a version, or with an unsupported version, are
+        rejected with `400`.
+      schema:
+        type: string
+        pattern: '^[0-9]+$'
+        example: '1'
+
+    ContentType:
+      name: Content-Type
+      in: header
+      required: false
+      description: >
+        Media type of the request body. Defaults to `application/json` when
+        omitted; any other value is rejected with `415`.
+      schema:
+        type: string
+        default: application/json
+        enum: [application/json]
+
+    AcceptEncoding:
+      name: Accept-Encoding
+      in: header
+      required: false
+      description: >
+        Set to `gzip` to receive a gzip compressed response. Responses are only
+        compressed when the client explicitly asks for it.
+      schema:
+        type: string
+      example: gzip
+
+    IfNoneMatch:
+      name: If-None-Match
+      in: header
+      required: false
+      description: >
+        Entity tag of a previously retrieved representation. When it still
+        matches, the API answers `304 Not Modified` with an empty body.
+      schema: { type: string }
+      example: '"a1b2c3d4e5f60718"'
+
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: >
+        Opaque label associated with the first resource of the requested page,
+        obtained from `links.next` of a previous response. Cursors are tied to
+        the `sort` order they were issued for and MUST NOT be constructed by
+        clients.
+      schema:
+        type: string
+        maxLength: 512
+      example: djE6eyJhbm5vdW5jZW1lbnRJZCI6ImFiYyJ9
+
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: >
+        Number of announcements to return for this page. Defaults to 20 when
+        omitted; the server enforced maximum is 100.
+      schema:
+        type: integer
+        format: int32
+        minimum: 1
+        maximum: 100
+        default: 20
+
+    Sort:
+      name: sort
+      in: query
+      required: false
+      description: >
+        Property to sort the announcements on. A leading minus sign selects
+        descending order. Only `announcementDate` is sortable.
+      schema:
+        type: string
+        enum: [announcementDate, -announcementDate]
+        default: -announcementDate
+
+  # ---------------------------------------------------------------------------
+  # Headers
+  # ---------------------------------------------------------------------------
+  headers:
+    CacheControl:
+      description: Caching policy for this representation.
+      schema: { type: string }
+      example: public, max-age=60
+    CacheControlNoStore:
+      description: Caching policy for this representation.
+      schema: { type: string }
+      example: no-store
+    ETag:
+      description: Entity tag of this representation, for conditional requests.
+      schema: { type: string }
+      example: '"a1b2c3d4e5f60718"'
+    ContentEncoding:
+      description: Present as `gzip` when the client asked for a compressed response.
+      schema: { type: string }
+      example: gzip
+    AccessControlAllowOrigin:
+      description: >
+        Echoes the calling origin when it is on the configured allow list.
+        Absent for origins that are not allowed.
+      schema: { type: string }
+      example: https://www.philips.com
+    RetryAfter:
+      description: Seconds the client SHOULD wait before retrying.
+      schema: { type: integer }
+      example: 1
+
+  # ---------------------------------------------------------------------------
+  # Reusable responses
+  # ---------------------------------------------------------------------------
+  responses:
+    BadRequest:
+      description: >
+        The request is malformed: a parameter is missing or carries an invalid
+        value, or the `Api-Version` header is missing or unsupported.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorDocument' }
+          examples:
+            missingApiVersion:
+              summary: No Api-Version header
+              value:
+                errors:
+                  - status: '400'
+                    code: MISSING_API_VERSION
+                    title: Missing API version
+                    detail: The Api-Version header is required.
+                    source: { parameter: Api-Version }
+            invalidLimit:
+              summary: Page size out of range
+              value:
+                errors:
+                  - status: '400'
+                    code: INVALID_PARAMETER_VALUE
+                    title: Invalid parameter value
+                    detail: limit must be an integer between 1 and 100.
+                    source: { parameter: limit }
+            missingTitle:
+              summary: Required member absent from the payload
+              value:
+                errors:
+                  - status: '400'
+                    code: MISSING_PARAMETER
+                    title: Missing required parameter
+                    detail: The member title is required.
+                    source: { pointer: /data/attributes/title }
+
+    Unauthorized:
+      description: >
+        No valid OAuth 2.0 access token was presented for this private
+        operation.
+      headers:
+        WWW-Authenticate:
+          description: Authentication scheme expected by the resource server.
+          schema: { type: string }
+          example: Bearer realm="announcements"
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorDocument' }
+          example:
+            errors:
+              - status: '401'
+                code: UNAUTHORIZED
+                title: Unauthorized
+                detail: A valid access token is required for this operation.
+
+    Forbidden:
+      description: >
+        The `Api-Key` header is missing or invalid, or the presented access
+        token does not carry the scope required for this operation.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorDocument' }
+          examples:
+            missingApiKey:
+              value:
+                errors:
+                  - status: '403'
+                    code: MISSING_API_KEY
+                    title: Missing API key
+                    detail: The Api-Key header is required.
+                    source: { parameter: Api-Key }
+            invalidApiKey:
+              value:
+                errors:
+                  - status: '403'
+                    code: INVALID_API_KEY
+                    title: Invalid API key
+                    detail: The supplied Api-Key is not valid.
+                    source: { parameter: Api-Key }
+            clientGeneratedId:
+              summary: Client supplied an id, which this API does not support
+              value:
+                errors:
+                  - status: '403'
+                    code: CLIENT_GENERATED_ID_NOT_SUPPORTED
+                    title: Client generated id not supported
+                    detail: Announcement ids are assigned by the server.
+                    source: { pointer: /data/id }
+
+    NotFound:
+      description: The requested resource does not exist.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorDocument' }
+          example:
+            errors:
+              - status: '404'
+                code: RESOURCE_NOT_FOUND
+                title: Resource not found
+                detail: The requested resource does not exist.
+
+    MethodNotAllowed:
+      description: The HTTP method is not supported for this resource.
+      headers:
+        Allow:
+          description: Methods supported by this resource.
+          schema: { type: string }
+          example: GET, POST, OPTIONS
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorDocument' }
+          example:
+            errors:
+              - status: '405'
+                code: METHOD_NOT_ALLOWED
+                title: Method not allowed
+                detail: This resource supports GET, POST and OPTIONS.
+
+    NotAcceptable:
+      description: >
+        The `Accept` header only lists media types this API cannot produce.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorDocument' }
+          example:
+            errors:
+              - status: '406'
+                code: NOT_ACCEPTABLE
+                title: Not acceptable
+                detail: This API can only produce application/json.
+
+    Conflict:
+      description: >
+        The `type` member of the payload does not match the resource
+        collection being posted to.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorDocument' }
+          example:
+            errors:
+              - status: '409'
+                code: RESOURCE_TYPE_MISMATCH
+                title: Resource type mismatch
+                detail: Expected data.type to be announcements.
+                source: { pointer: /data/type }
+
+    UnsupportedMediaType:
+      description: The `Content-Type` of the request body is not supported.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorDocument' }
+          example:
+            errors:
+              - status: '415'
+                code: UNSUPPORTED_MEDIA_TYPE
+                title: Unsupported media type
+                detail: This API only consumes application/json.
+
+    TooManyRequests:
+      description: The client exceeded the rate limit configured for its API key.
+      headers:
+        Retry-After: { $ref: '#/components/headers/RetryAfter' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorDocument' }
+          example:
+            errors:
+              - status: '429'
+                code: TOO_MANY_REQUESTS
+                title: Too many requests
+                detail: Rate limit exceeded. Please retry later.
+
+    InternalServerError:
+      description: >
+        An unexpected condition prevented the request from being fulfilled. No
+        internal failure detail is exposed.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorDocument' }
+          example:
+            errors:
+              - status: '500'
+                code: SERVER_ERROR
+                title: Server error
+                detail: The request could not be processed.
+                id: 4f2a9b1c-7d3e-4a5b-8c9d-0e1f2a3b4c5d
+
+  # ---------------------------------------------------------------------------
+  # Schemas
+  # ---------------------------------------------------------------------------
+  schemas:
+
+    AnnouncementAttributes:
+      type: object
+      description: The properties of an announcement.
+      required: [title, description, announcementDate]
+      additionalProperties: false
+      properties:
+        title:
+          type: string
+          description: Short headline of the announcement.
+          minLength: 1
+          maxLength: 200
+          example: Philips opens new Experience Centre in Amsterdam
+        description:
+          type: string
+          description: Body text of the announcement.
+          minLength: 1
+          maxLength: 4000
+          example: >-
+            The new Experience Centre showcases connected care solutions and
+            opens its doors on 1 March.
+        announcementDate:
+          type: string
+          format: date-time
+          description: >
+            Date and time the announcement applies to, as an RFC 3339
+            date-time. Values sent in another timezone are normalised to UTC.
+          example: '2026-03-01T09:00:00Z'
+
+    ResourceMeta:
+      type: object
+      description: Reserved, read-only resource metadata.
+      additionalProperties: false
+      properties:
+        created:
+          type: string
+          format: date-time
+          description: Date/time at which the resource was created.
+          example: '2026-02-04T11:20:31Z'
+        lastModified:
+          type: string
+          format: date-time
+          description: Date/time at which the resource was last modified.
+          example: '2026-02-04T11:20:31Z'
+
+    Announcement:
+      type: object
+      description: An announcement, as a JSON API resource object.
+      required: [type, id, attributes]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          description: The resource type.
+          enum: [announcements]
+        id:
+          type: string
+          format: uuid
+          description: Server assigned identifier (RFC 4122 UUID).
+          example: 9a5f3c1e-6b2d-4f8a-9c0e-1d2b3a4c5d6e
+        attributes: { $ref: '#/components/schemas/AnnouncementAttributes' }
+        meta: { $ref: '#/components/schemas/ResourceMeta' }
+
+    AnnouncementCreate:
+      type: object
+      description: A JSON API resource object describing the announcement to create.
+      required: [type, attributes]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          description: MUST be `announcements`.
+          enum: [announcements]
+        attributes: { $ref: '#/components/schemas/AnnouncementAttributes' }
+
+    PaginationLinks:
+      type: object
+      description: >
+        Pagination links. `prev` and `last` are not provided: cursor pagination
+        is forward-only, which is what keeps it cheap and stable while
+        announcements are being published.
+      additionalProperties: false
+      properties:
+        self:
+          type: string
+          format: uri-reference
+          description: Link to the current page.
+          example: /communications/announcements?limit=20
+        first:
+          type: string
+          format: uri-reference
+          description: Link to the first page.
+          example: /communications/announcements?limit=20
+        next:
+          type: string
+          format: uri-reference
+          nullable: true
+          description: >
+            Link to the next page, absent once the service knows there are no
+            more results. A client pages until `next` is absent. Note that a
+            page ending exactly on the collection boundary still carries a
+            `next` link, so the final request of a walk may return an empty
+            `data` array - treat an empty page as the end, not as an error.
+          example: /communications/announcements?limit=20&cursor=djE6eyJ...
+
+    ListMeta:
+      type: object
+      description: Non-standard metadata about the list response.
+      additionalProperties: false
+      properties:
+        count:
+          type: integer
+          format: int64
+          minimum: 0
+          description: >
+            Total number of announcements matching the request, across all
+            pages.
+          example: 42
+        pageSize:
+          type: integer
+          format: int32
+          description: Number of announcements in this page.
+          example: 20
+
+    AnnouncementListDocument:
+      type: object
+      description: A JSON API document holding a page of announcements.
+      required: [data]
+      additionalProperties: false
+      properties:
+        data:
+          type: array
+          description: The announcements in this page.
+          items: { $ref: '#/components/schemas/Announcement' }
+        meta: { $ref: '#/components/schemas/ListMeta' }
+        links: { $ref: '#/components/schemas/PaginationLinks' }
+
+    AnnouncementDocument:
+      type: object
+      description: A JSON API document holding a single announcement.
+      required: [data]
+      additionalProperties: false
+      properties:
+        data: { $ref: '#/components/schemas/Announcement' }
+
+    AnnouncementCreateDocument:
+      type: object
+      description: A JSON API document holding the announcement to create.
+      required: [data]
+      additionalProperties: false
+      properties:
+        data: { $ref: '#/components/schemas/AnnouncementCreate' }
+
+    ErrorSource:
+      type: object
+      description: Points at the part of the request that caused the error.
+      additionalProperties: false
+      properties:
+        pointer:
+          type: string
+          description: >
+            JSON Pointer (RFC 6901) to the offending member of the request
+            document.
+          example: /data/attributes/title
+        parameter:
+          type: string
+          description: Name of the offending query parameter or header.
+          example: limit
+
+    Error:
+      type: object
+      description: A single error occurrence.
+      required: [code, title]
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          description: >
+            Unique identifier for this occurrence, echoing the request
+            correlation id. Quote it when reporting a problem.
+          example: 4f2a9b1c-7d3e-4a5b-8c9d-0e1f2a3b4c5d
+        status:
+          type: string
+          description: >
+            HTTP status code, as a string. Present on every error this service
+            produces; it may be absent on the small class of rejections the API
+            gateway answers before the service is reached, where the HTTP
+            status line is authoritative.
+          example: '400'
+        code:
+          type: string
+          description: Application error code from the PIL standard error list.
+          enum:
+            - INVALID_PARAMETER_VALUE
+            - MISSING_PARAMETER
+            - MISSING_API_VERSION
+            - INVALID_API_VERSION
+            - BAD_REQUEST
+            - UNAUTHORIZED
+            - MISSING_API_KEY
+            - INVALID_API_KEY
+            - INSUFFICIENT_SCOPE
+            - CLIENT_GENERATED_ID_NOT_SUPPORTED
+            - RESOURCE_NOT_FOUND
+            - METHOD_NOT_ALLOWED
+            - NOT_ACCEPTABLE
+            - RESOURCE_TYPE_MISMATCH
+            - UNSUPPORTED_MEDIA_TYPE
+            - REQUEST_URI_TOO_LONG
+            - TOO_MANY_REQUESTS
+            - HTTP_NOT_ALLOWED
+            - SERVER_ERROR
+          example: MISSING_PARAMETER
+        title:
+          type: string
+          description: Short, human readable summary of the problem.
+          example: Missing required parameter
+        detail:
+          type: string
+          description: >
+            Human readable explanation specific to this occurrence. Never
+            contains internal failure detail.
+          example: The member title is required.
+        source: { $ref: '#/components/schemas/ErrorSource' }
+
+    ErrorMeta:
+      type: object
+      description: Non-standard metadata about the failed request.
+      additionalProperties: false
+      properties:
+        requestId:
+          type: string
+          description: Correlation id of the request, for support purposes.
+          example: 4f2a9b1c-7d3e-4a5b-8c9d-0e1f2a3b4c5d
+
+    ErrorDocument:
+      type: object
+      description: >
+        A JSON API error document. `errors` never appears together with `data`
+        in the same document.
+      required: [errors]
+      additionalProperties: false
+      properties:
+        errors:
+          type: array
+          minItems: 1
+          description: The errors that occurred while processing the request.
+          items: { $ref: '#/components/schemas/Error' }
+        meta: { $ref: '#/components/schemas/ErrorMeta' }
+
+  # ---------------------------------------------------------------------------
+  # Examples
+  # ---------------------------------------------------------------------------
+  examples:
+    AnnouncementListFirstPage:
+      summary: First page, more pages available
+      value:
+        data:
+          - type: announcements
+            id: 9a5f3c1e-6b2d-4f8a-9c0e-1d2b3a4c5d6e
+            attributes:
+              title: Philips opens new Experience Centre in Amsterdam
+              description: >-
+                The new Experience Centre showcases connected care solutions
+                and opens its doors on 1 March.
+              announcementDate: '2026-03-01T09:00:00Z'
+            meta:
+              created: '2026-02-04T11:20:31Z'
+              lastModified: '2026-02-04T11:20:31Z'
+          - type: announcements
+            id: 1c7e5a90-2f4b-4d61-83a7-5b9c0d1e2f30
+            attributes:
+              title: Annual results published
+              description: Philips published its annual results for 2025.
+              announcementDate: '2026-01-28T07:00:00Z'
+            meta:
+              created: '2026-01-28T07:00:04Z'
+              lastModified: '2026-01-28T07:00:04Z'
+        meta:
+          count: 42
+          pageSize: 2
+        links:
+          self: /communications/announcements?limit=2
+          first: /communications/announcements?limit=2
+          next: /communications/announcements?limit=2&cursor=djE6eyJzIjoiZGVzYyJ9
+    AnnouncementListLastPage:
+      summary: Last page, no `next` link
+      value:
+        data:
+          - type: announcements
+            id: 3d8b6f21-9c0a-4e73-b1d5-6a7e8f90c1b2
+            attributes:
+              title: Philips Foundation annual report
+              description: The Philips Foundation published its annual report.
+              announcementDate: '2025-11-12T10:30:00Z'
+            meta:
+              created: '2025-11-12T10:31:02Z'
+              lastModified: '2025-11-12T10:31:02Z'
+        meta:
+          count: 42
+          pageSize: 1
+        links:
+          self: /communications/announcements?limit=2&cursor=djE6eyJzIjoiZGVzYyJ9
+          first: /communications/announcements?limit=2

@@ -1,0 +1,575 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Announcements microservice - foundation stack. Owns the state and the
+  identity of the service: the DynamoDB table, the Cognito authorization
+  server, the API key secret, the Lambda functions and the alerting they feed.
+  Deployed before infrastructure/api.yaml, whose OpenAPI import needs the
+  Cognito user pool ARN and the Lambda function names produced here.
+
+# -----------------------------------------------------------------------------
+Parameters:
+# -----------------------------------------------------------------------------
+  ServiceName:
+    Type: String
+    Default: announcements
+    AllowedPattern: '^[a-z][a-z0-9-]{2,24}$'
+    Description: Lower case service name, used as the prefix for every resource.
+
+  EnvironmentName:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, tst, acc, stg, prod]
+    Description: >-
+      Environment discriminator, matching the host ids in the PIL API
+      guidelines (dev / tst / acc / stg, with prod served from www).
+
+  AllowedOrigin:
+    Type: String
+    Default: https://www.philips.com
+    AllowedPattern: '^https://[a-zA-Z0-9.-]+(:[0-9]+)?$'
+    Description: >-
+      The single browser origin allowed to call this API cross-origin. CORS is
+      deny-by-default, so this is an explicit allow list of exactly one entry.
+
+  AlarmEmail:
+    Type: String
+    Default: ''
+    Description: >-
+      Optional email address subscribed to the alert topic. Leave empty to wire
+      the topic up to an existing on-call integration instead.
+
+  LogRetentionInDays:
+    Type: Number
+    Default: 30
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 180, 365, 400, 545, 731, 1827, 3653]
+    Description: CloudWatch Logs retention. Logs are a real line on the bill.
+
+  ListCacheMaxAgeSeconds:
+    Type: Number
+    Default: 60
+    MinValue: 0
+    MaxValue: 3600
+    Description: max-age advertised on list responses.
+
+  LogLevel:
+    Type: String
+    Default: INFO
+    AllowedValues: [DEBUG, INFO, WARNING, ERROR]
+
+  ListReservedConcurrency:
+    Type: Number
+    Default: -1
+    Description: >-
+      Reserved concurrency for the list function, capping the blast radius of a
+      traffic spike on both DynamoDB and the bill. -1 leaves it unreserved.
+
+  CognitoDomainPrefix:
+    Type: String
+    Default: ''
+    Description: >-
+      Globally unique prefix for the Cognito hosted domain that serves the
+      OAuth 2.0 token endpoint. Defaults to <service>-<env>-<account>.
+
+# -----------------------------------------------------------------------------
+Conditions:
+# -----------------------------------------------------------------------------
+  IsProduction: !Equals [!Ref EnvironmentName, prod]
+  HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, '']]
+  HasCustomCognitoDomain: !Not [!Equals [!Ref CognitoDomainPrefix, '']]
+  HasReservedConcurrency: !Not [!Equals [!Ref ListReservedConcurrency, -1]]
+
+# -----------------------------------------------------------------------------
+Resources:
+# -----------------------------------------------------------------------------
+
+  # --- Data -------------------------------------------------------------
+  AnnouncementsTable:
+    Type: AWS::DynamoDB::Table
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub '${ServiceName}-${EnvironmentName}'
+      # On-demand: an announcements feed is spiky and low volume, so paying per
+      # request beats paying for provisioned capacity that sits idle, and it
+      # removes autoscaling as a thing that can be wrong at 3am.
+      BillingMode: PAY_PER_REQUEST
+      # Encrypted at rest with an AWS owned key by default - no SSESpecification
+      # block, because a customer managed key adds cost without adding a
+      # control this service needs.
+      DeletionProtectionEnabled: !If [IsProduction, true, false]
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      AttributeDefinitions:
+        - AttributeName: announcementId
+          AttributeType: S
+        - AttributeName: listPartition
+          AttributeType: S
+        - AttributeName: announcementDateId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: announcementId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        # Serves "all announcements, newest first" as a single Query. The sort
+        # key is "<announcementDate>#<announcementId>", so ordering stays total
+        # even when two announcements share a timestamp - which is what lets a
+        # cursor identify exactly one row.
+        - IndexName: announcementDateIndex
+          KeySchema:
+            - AttributeName: listPartition
+              KeyType: HASH
+            - AttributeName: announcementDateId
+              KeyType: RANGE
+          Projection:
+            # Items are a few hundred bytes, so projecting everything avoids a
+            # second read per row and costs almost nothing in storage.
+            ProjectionType: ALL
+      Tags:
+        - { Key: Service, Value: !Ref ServiceName }
+        - { Key: Environment, Value: !Ref EnvironmentName }
+
+  # --- Client identification -------------------------------------------
+  ApiKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${ServiceName}/${EnvironmentName}/api-key'
+      Description: >-
+        Api-Key values accepted by the announcements API. API Gateway usage
+        plan keys cannot be used here because they are hard-wired to the
+        x-api-key header, which the PIL guidelines override with Api-Key.
+      GenerateSecretString:
+        SecretStringTemplate: !Sub '{"clientId":"${ServiceName}-${EnvironmentName}-demo-client"}'
+        GenerateStringKey: apiKey
+        PasswordLength: 40
+        ExcludePunctuation: true
+      Tags:
+        - { Key: Service, Value: !Ref ServiceName }
+        - { Key: Environment, Value: !Ref EnvironmentName }
+
+  # --- Authorization server --------------------------------------------
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub '${ServiceName}-${EnvironmentName}'
+      # No human users: this pool exists purely as an OAuth 2.0 authorization
+      # server for machine-to-machine clients publishing announcements.
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 16
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+          RequireUppercase: true
+      UserPoolTags:
+        Service: !Ref ServiceName
+        Environment: !Ref EnvironmentName
+
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      UserPoolId: !Ref UserPool
+      Domain: !If
+        - HasCustomCognitoDomain
+        - !Ref CognitoDomainPrefix
+        - !Sub '${ServiceName}-${EnvironmentName}-${AWS::AccountId}'
+
+  AnnouncementsResourceServer:
+    Type: AWS::Cognito::UserPoolResourceServer
+    Properties:
+      UserPoolId: !Ref UserPool
+      Identifier: announcements
+      Name: Announcements API
+      Scopes:
+        - ScopeName: write
+          ScopeDescription: Create announcements.
+
+  PublisherClient:
+    Type: AWS::Cognito::UserPoolClient
+    DependsOn: AnnouncementsResourceServer
+    Properties:
+      ClientName: !Sub '${ServiceName}-${EnvironmentName}-publisher'
+      UserPoolId: !Ref UserPool
+      GenerateSecret: true
+      # Client credentials: publishing an announcement is a back-office
+      # integration, not something an end user does in a browser, so there is
+      # no interactive flow and no refresh token to leak.
+      AllowedOAuthFlows: [client_credentials]
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthScopes: ['announcements/write']
+      SupportedIdentityProviders: [COGNITO]
+      AccessTokenValidity: 60
+      TokenValidityUnits:
+        AccessToken: minutes
+      EnableTokenRevocation: true
+      PreventUserExistenceErrors: ENABLED
+
+  # --- Compute ----------------------------------------------------------
+  ListFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    UpdateReplacePolicy: Delete
+    DeletionPolicy: Delete
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ServiceName}-${EnvironmentName}-list'
+      RetentionInDays: !Ref LogRetentionInDays
+
+  CreateFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    UpdateReplacePolicy: Delete
+    DeletionPolicy: Delete
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ServiceName}-${EnvironmentName}-create'
+      RetentionInDays: !Ref LogRetentionInDays
+
+  # Two roles rather than one shared role: the list path can only ever read,
+  # the create path can only ever write. Least privilege is cheap here.
+  ListFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: read-announcements
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:Query
+                  - dynamodb:GetItem
+                Resource:
+                  - !GetAtt AnnouncementsTable.Arn
+                  - !Sub '${AnnouncementsTable.Arn}/index/announcementDateIndex'
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref ApiKeySecret
+              - Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !Sub '${ListFunctionLogGroup.Arn}:*'
+              - Effect: Allow
+                Action: [xray:PutTraceSegments, xray:PutTelemetryRecords]
+                Resource: '*'
+
+  CreateFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: write-announcements
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                # The announcement and the collection counter are written in one
+                # transaction, which is why UpdateItem sits next to PutItem.
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                Resource: !GetAtt AnnouncementsTable.Arn
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref ApiKeySecret
+              - Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !Sub '${CreateFunctionLogGroup.Arn}:*'
+              - Effect: Allow
+                Action: [xray:PutTraceSegments, xray:PutTelemetryRecords]
+                Resource: '*'
+
+  ListFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: ListFunctionLogGroup
+    Properties:
+      # An explicit, deterministic name is what lets the OpenAPI document
+      # reference the integration target before this stack has been deployed.
+      FunctionName: !Sub '${ServiceName}-${EnvironmentName}-list'
+      Description: GET /announcements
+      Runtime: python3.12
+      # arm64 is roughly 20% cheaper per GB-second than x86_64 for identical
+      # pure-Python work.
+      Architectures: [arm64]
+      Handler: announcements.handlers.list_announcements.handler
+      Code: ../src
+      Role: !GetAtt ListFunctionRole.Arn
+      MemorySize: 512
+      Timeout: 10
+      ReservedConcurrentExecutions: !If
+        - HasReservedConcurrency
+        - !Ref ListReservedConcurrency
+        - !Ref AWS::NoValue
+      TracingConfig: { Mode: Active }
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref AnnouncementsTable
+          API_KEY_SECRET_ID: !Ref ApiKeySecret
+          ALLOWED_ORIGIN: !Ref AllowedOrigin
+          LIST_CACHE_MAX_AGE_SECONDS: !Ref ListCacheMaxAgeSeconds
+          LOG_LEVEL: !Ref LogLevel
+          AWS_XRAY_CONTEXT_MISSING: LOG_ERROR
+      Tags:
+        - { Key: Service, Value: !Ref ServiceName }
+        - { Key: Environment, Value: !Ref EnvironmentName }
+
+  CreateFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: CreateFunctionLogGroup
+    Properties:
+      FunctionName: !Sub '${ServiceName}-${EnvironmentName}-create'
+      Description: POST /announcements
+      Runtime: python3.12
+      Architectures: [arm64]
+      Handler: announcements.handlers.create_announcement.handler
+      Code: ../src
+      Role: !GetAtt CreateFunctionRole.Arn
+      MemorySize: 512
+      Timeout: 10
+      TracingConfig: { Mode: Active }
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref AnnouncementsTable
+          API_KEY_SECRET_ID: !Ref ApiKeySecret
+          ALLOWED_ORIGIN: !Ref AllowedOrigin
+          LOG_LEVEL: !Ref LogLevel
+          AWS_XRAY_CONTEXT_MISSING: LOG_ERROR
+      Tags:
+        - { Key: Service, Value: !Ref ServiceName }
+        - { Key: Environment, Value: !Ref EnvironmentName }
+
+  # --- Alerting ---------------------------------------------------------
+  AlertsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${ServiceName}-${EnvironmentName}-alerts'
+      DisplayName: !Sub '${ServiceName} ${EnvironmentName} alerts'
+
+  AlertsTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics: [!Ref AlertsTopic]
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudWatchAlarms
+            Effect: Allow
+            Principal: { Service: cloudwatch.amazonaws.com }
+            Action: sns:Publish
+            Resource: !Ref AlertsTopic
+            Condition:
+              StringEquals:
+                AWS:SourceAccount: !Ref AWS::AccountId
+
+  AlertsSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlarmEmail
+    Properties:
+      TopicArn: !Ref AlertsTopic
+      Protocol: email
+      Endpoint: !Ref AlarmEmail
+
+  # --- Alarms -----------------------------------------------------------
+  # Every alarm treats missing data as healthy: no traffic is not an incident.
+  ListFunctionErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ServiceName}-${EnvironmentName}-list-errors'
+      AlarmDescription: The list endpoint is failing.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions: [{ Name: FunctionName, Value: !Ref ListFunction }]
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertsTopic]
+      OKActions: [!Ref AlertsTopic]
+
+  CreateFunctionErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ServiceName}-${EnvironmentName}-create-errors'
+      AlarmDescription: The create endpoint is failing.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions: [{ Name: FunctionName, Value: !Ref CreateFunction }]
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertsTopic]
+      OKActions: [!Ref AlertsTopic]
+
+  LambdaThrottlesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ServiceName}-${EnvironmentName}-lambda-throttles'
+      AlarmDescription: >-
+        Lambda is shedding invocations - concurrency limit or reserved
+        concurrency is too low for current traffic.
+      Namespace: AWS/Lambda
+      MetricName: Throttles
+      Dimensions: [{ Name: FunctionName, Value: !Ref ListFunction }]
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertsTopic]
+
+  ListFunctionDurationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ServiceName}-${EnvironmentName}-list-latency'
+      AlarmDescription: >-
+        p95 list latency is drifting towards the 10s function timeout.
+      Namespace: AWS/Lambda
+      MetricName: Duration
+      Dimensions: [{ Name: FunctionName, Value: !Ref ListFunction }]
+      ExtendedStatistic: p95
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 2000
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertsTopic]
+
+  TableThrottleAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ServiceName}-${EnvironmentName}-table-throttles'
+      AlarmDescription: >-
+        DynamoDB is throttling. On-demand tables throttle when traffic doubles
+        faster than the table can adapt, or when one partition runs hot.
+      Namespace: AWS/DynamoDB
+      MetricName: ThrottledRequests
+      Dimensions: [{ Name: TableName, Value: !Ref AnnouncementsTable }]
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertsTopic]
+
+  TableSystemErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ServiceName}-${EnvironmentName}-table-system-errors'
+      AlarmDescription: DynamoDB is returning 5xx to this service.
+      Namespace: AWS/DynamoDB
+      MetricName: SystemErrors
+      Dimensions: [{ Name: TableName, Value: !Ref AnnouncementsTable }]
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertsTopic]
+
+  # Structured logs make this possible: one metric filter over both functions'
+  # ERROR lines, so an unhandled exception pages someone even if the Errors
+  # metric is diluted by volume.
+  ListErrorLogMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref ListFunctionLogGroup
+      FilterPattern: '{ $.level = "ERROR" }'
+      MetricTransformations:
+        - MetricNamespace: !Sub '${ServiceName}/${EnvironmentName}'
+          MetricName: HandledErrors
+          MetricValue: '1'
+          DefaultValue: 0
+
+  CreateErrorLogMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref CreateFunctionLogGroup
+      FilterPattern: '{ $.level = "ERROR" }'
+      MetricTransformations:
+        - MetricNamespace: !Sub '${ServiceName}/${EnvironmentName}'
+          MetricName: HandledErrors
+          MetricValue: '1'
+          DefaultValue: 0
+
+  ApplicationErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ServiceName}-${EnvironmentName}-application-errors'
+      AlarmDescription: The service logged an unexpected error.
+      Namespace: !Sub '${ServiceName}/${EnvironmentName}'
+      MetricName: HandledErrors
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertsTopic]
+
+# -----------------------------------------------------------------------------
+Outputs:
+# -----------------------------------------------------------------------------
+  TableName:
+    Value: !Ref AnnouncementsTable
+    Export: { Name: !Sub '${AWS::StackName}-TableName' }
+
+  ListFunctionName:
+    Value: !Ref ListFunction
+    Export: { Name: !Sub '${AWS::StackName}-ListFunctionName' }
+
+  ListFunctionArn:
+    Value: !GetAtt ListFunction.Arn
+    Export: { Name: !Sub '${AWS::StackName}-ListFunctionArn' }
+
+  CreateFunctionName:
+    Value: !Ref CreateFunction
+    Export: { Name: !Sub '${AWS::StackName}-CreateFunctionName' }
+
+  CreateFunctionArn:
+    Value: !GetAtt CreateFunction.Arn
+    Export: { Name: !Sub '${AWS::StackName}-CreateFunctionArn' }
+
+  UserPoolId:
+    Value: !Ref UserPool
+    Export: { Name: !Sub '${AWS::StackName}-UserPoolId' }
+
+  UserPoolArn:
+    Value: !GetAtt UserPool.Arn
+    Export: { Name: !Sub '${AWS::StackName}-UserPoolArn' }
+
+  PublisherClientId:
+    Description: OAuth 2.0 client id for publishing announcements.
+    Value: !Ref PublisherClient
+    Export: { Name: !Sub '${AWS::StackName}-PublisherClientId' }
+
+  TokenUrl:
+    Description: OAuth 2.0 token endpoint for the client credentials grant.
+    Value: !Sub 'https://${UserPoolDomain}.auth.${AWS::Region}.amazoncognito.com/oauth2/token'
+    Export: { Name: !Sub '${AWS::StackName}-TokenUrl' }
+
+  ApiKeySecretArn:
+    Description: Secret holding the Api-Key values this API accepts.
+    Value: !Ref ApiKeySecret
+    Export: { Name: !Sub '${AWS::StackName}-ApiKeySecretArn' }
+
+  AlertsTopicArn:
+    Value: !Ref AlertsTopic
+    Export: { Name: !Sub '${AWS::StackName}-AlertsTopicArn' }
+
+  AllowedOrigin:
+    Value: !Ref AllowedOrigin
+    Export: { Name: !Sub '${AWS::StackName}-AllowedOrigin' }

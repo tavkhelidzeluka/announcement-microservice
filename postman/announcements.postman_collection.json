@@ -1,0 +1,1649 @@
+{
+  "info": {
+    "name": "PIL Announcements API",
+    "description": "Functional and conformance tests for the announcements microservice.\n\n**Run order matters.** `Setup` fetches an OAuth 2.0 access token and `Create` seeds the announcements that `List` pages through, so run the whole collection rather than individual requests:\n\n```\nnewman run postman/announcements.postman_collection.json \\\n  -e postman/announcements.postman_environment.json\n```\n\nFill the environment file from a deployed stack with `./scripts/show_credentials.sh --json`.\n\nEvery request also inherits the collection-level tests, which assert the invariants the PIL RESTful API Guidelines place on *every* response: JSON content type, a JSON API document at the root, `data` and `errors` never coexisting, error objects carrying a code from the standard list, and no internal failure detail in the body.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Invariants that hold for every response this API produces.",
+          "const status = pm.response.code;",
+          "",
+          "if (status !== 304 && status !== 204) {",
+          "    pm.test('[all] the response is JSON', () => {",
+          "        pm.expect(pm.response.headers.get('Content-Type') || '').to.include('application/json');",
+          "    });",
+          "",
+          "    let body;",
+          "    pm.test('[all] the body parses as a JSON object', () => {",
+          "        body = pm.response.json();",
+          "        pm.expect(body).to.be.an('object');",
+          "    });",
+          "",
+          "    if (body) {",
+          "        pm.test('[all] data and errors never coexist', () => {",
+          "            const both = body.data !== undefined && body.errors !== undefined;",
+          "            pm.expect(both, 'document has both data and errors').to.be.false;",
+          "        });",
+          "",
+          "        if (body.errors) {",
+          "            const codes = [",
+          "                'INVALID_PARAMETER_VALUE', 'MISSING_PARAMETER', 'MISSING_API_VERSION',",
+          "                'INVALID_API_VERSION', 'BAD_REQUEST', 'UNAUTHORIZED', 'MISSING_API_KEY',",
+          "                'INVALID_API_KEY', 'INSUFFICIENT_SCOPE', 'CLIENT_GENERATED_ID_NOT_SUPPORTED',",
+          "                'RESOURCE_NOT_FOUND', 'METHOD_NOT_ALLOWED', 'NOT_ACCEPTABLE',",
+          "                'RESOURCE_TYPE_MISMATCH', 'UNSUPPORTED_MEDIA_TYPE', 'REQUEST_URI_TOO_LONG',",
+          "                'TOO_MANY_REQUESTS', 'HTTP_NOT_ALLOWED', 'SERVER_ERROR',",
+          "            ];",
+          "            pm.test('[all] errors use the standard shape and code list', () => {",
+          "                pm.expect(body.errors).to.be.an('array').that.is.not.empty;",
+          "                body.errors.forEach((error) => {",
+          "                    pm.expect(codes, 'code ' + error.code).to.include(error.code);",
+          "                    pm.expect(error.title).to.be.a('string').and.not.empty;",
+          "                });",
+          "            });",
+          "            pm.test('[all] no internal detail is exposed', () => {",
+          "                pm.expect(pm.response.text()).to.not.match(",
+          "                    /Traceback|botocore|boto3|\\/var\\/task|arn:aws|Exception:/i);",
+          "            });",
+          "        }",
+          "    }",
+          "}",
+          "",
+          "pm.test('[all] the response is not a server error', () => {",
+          "    pm.expect(status, 'HTTP status').to.be.below(500);",
+          "});"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "accessToken",
+      "value": ""
+    },
+    {
+      "key": "cursor",
+      "value": ""
+    },
+    {
+      "key": "etag",
+      "value": ""
+    },
+    {
+      "key": "createdId",
+      "value": ""
+    },
+    {
+      "key": "createdTitle",
+      "value": ""
+    },
+    {
+      "key": "firstPageId",
+      "value": ""
+    },
+    {
+      "key": "announcementDate",
+      "value": ""
+    },
+    {
+      "key": "allowedOrigin",
+      "value": "https://www.philips.com"
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Setup",
+      "description": "Obtains the OAuth 2.0 access token used by the private API.",
+      "item": [
+        {
+          "name": "Get OAuth 2.0 access token",
+          "description": "Client credentials grant against the Cognito authorization server. The token is stored in the `accessToken` variable and reused by every request that needs the `announcements/write` scope.",
+          "request": {
+            "auth": {
+              "type": "basic",
+              "basic": [
+                {
+                  "key": "username",
+                  "value": "{{clientId}}",
+                  "type": "string"
+                },
+                {
+                  "key": "password",
+                  "value": "{{clientSecret}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "client_credentials"
+                },
+                {
+                  "key": "scope",
+                  "value": "announcements/write"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{tokenUrl}}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('token endpoint answers 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('an access token was issued', () => {",
+                  "    pm.expect(body).to.have.property('access_token');",
+                  "    pm.expect(body.token_type).to.eql('Bearer');",
+                  "});",
+                  "pm.collectionVariables.set('accessToken', body.access_token);",
+                  "",
+                  "// A date in the near future, reused by the create requests so the",
+                  "// newest announcement is deterministic within a run.",
+                  "const when = new Date(Date.now() + 86400000).toISOString().replace(/\\.\\d{3}Z$/, 'Z');",
+                  "pm.collectionVariables.set('announcementDate', when);"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "2. Create announcement (private)",
+      "description": "The create API, its authorization and its validation rules.",
+      "item": [
+        {
+          "name": "Create announcement",
+          "description": "The happy path for the private API. Saves the new id so later requests can assert the announcement really made it into the collection.",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Api-Version",
+                "value": "{{apiVersion}}"
+              },
+              {
+                "key": "Api-Key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/announcements"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"data\": {\n    \"type\": \"announcements\",\n    \"attributes\": {\n      \"title\": \"{{$randomLoremSentence}}\",\n      \"description\": \"Created by the Postman collection at {{$isoTimestamp}}.\",\n      \"announcementDate\": \"{{announcementDate}}\"\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201 Created', () => pm.response.to.have.status(201));",
+                  "const resource = pm.response.json().data;",
+                  "pm.test('the response is a single JSON API resource object', () => {",
+                  "    pm.expect(resource.type).to.eql('announcements');",
+                  "    pm.expect(resource.id).to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);",
+                  "});",
+                  "pm.test('the attributes echo what was sent', () => {",
+                  "    const sent = JSON.parse(pm.request.body.raw.replace(/\\{\\{announcementDate\\}\\}/, pm.collectionVariables.get('announcementDate')));",
+                  "    pm.expect(resource.attributes.announcementDate).to.eql(sent.data.attributes.announcementDate);",
+                  "    pm.expect(resource.attributes.title).to.be.a('string').and.not.empty;",
+                  "});",
+                  "pm.test('reserved resource metadata is present and RFC 3339', () => {",
+                  "    pm.expect(resource.meta.created).to.match(/^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$/);",
+                  "    pm.expect(resource.meta.lastModified).to.match(/^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$/);",
+                  "});",
+                  "pm.test('a created resource is not cached', () => {",
+                  "    pm.expect(pm.response.headers.get('Cache-Control')).to.eql('no-store');",
+                  "});",
+                  "pm.collectionVariables.set('createdId', resource.id);",
+                  "pm.collectionVariables.set('createdTitle', resource.attributes.title);"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Create a second announcement",
+          "description": "Gives the pagination requests something to page through.",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Api-Version",
+                "value": "{{apiVersion}}"
+              },
+              {
+                "key": "Api-Key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/announcements"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"data\": {\n    \"type\": \"announcements\",\n    \"attributes\": {\n      \"title\": \"Philips publishes its quarterly results\",\n      \"description\": \"The quarterly results are available on the investor relations site.\",\n      \"announcementDate\": \"2026-01-28T07:00:00Z\"\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201 Created', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Create a third announcement",
+          "description": "One more, so `limit=1` genuinely has more than one page to walk.",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Api-Version",
+                "value": "{{apiVersion}}"
+              },
+              {
+                "key": "Api-Key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/announcements"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"data\": {\n    \"type\": \"announcements\",\n    \"attributes\": {\n      \"title\": \"Philips Foundation annual report\",\n      \"description\": \"The Philips Foundation published its annual report.\",\n      \"announcementDate\": \"2025-11-12T10:30:00Z\"\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201 Created', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Create without an access token is 401",
+          "description": "The create API is private: no bearer token, no announcement.",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Api-Version",
+                "value": "{{apiVersion}}"
+              },
+              {
+                "key": "Api-Key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/announcements"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"data\": {\n    \"type\": \"announcements\",\n    \"attributes\": {\n      \"title\": \"Should never be stored\",\n      \"description\": \"No token was presented.\",\n      \"announcementDate\": \"2026-03-01T09:00:00Z\"\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "pm.test('the challenge names the bearer scheme', () => {",
+                  "    pm.expect(pm.response.headers.get('WWW-Authenticate')).to.include('Bearer');",
+                  "});",
+                  "pm.test('error code is UNAUTHORIZED', () => {",
+                  "    pm.expect(pm.response.json().errors[0].code).to.eql('UNAUTHORIZED');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Create with a garbled access token is 401",
+          "description": "A token that is not a valid Cognito JWT is rejected by the authorizer, not by the handler.",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Api-Version",
+                "value": "{{apiVersion}}"
+              },
+              {
+                "key": "Api-Key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer not.a.jwt"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/announcements"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"data\": {\n    \"type\": \"announcements\",\n    \"attributes\": {\n      \"title\": \"Should never be stored\",\n      \"description\": \"The token is nonsense.\",\n      \"announcementDate\": \"2026-03-01T09:00:00Z\"\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401 Unauthorized', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Create without an Api-Key is 403",
+          "description": "Client identification is required on every method, authenticated or not.",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Api-Version",
+                "value": "{{apiVersion}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/announcements"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"data\": {\n    \"type\": \"announcements\",\n    \"attributes\": {\n      \"title\": \"Should never be stored\",\n      \"description\": \"No Api-Key header.\",\n      \"announcementDate\": \"2026-03-01T09:00:00Z\"\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 403 Forbidden', () => pm.response.to.have.status(403));",
+                  "pm.test('error code is MISSING_API_KEY', () => {",
+                  "    const error = pm.response.json().errors[0];",
+                  "    pm.expect(error.code).to.eql('MISSING_API_KEY');",
+                  "    pm.expect(error.source.parameter).to.eql('Api-Key');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Create without a title is 400",
+          "description": "Validation errors point at the offending member with a JSON Pointer.",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Api-Version",
+                "value": "{{apiVersion}}"
+              },
+              {
+                "key": "Api-Key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/announcements"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"data\": {\n    \"type\": \"announcements\",\n    \"attributes\": {\n      \"description\": \"A description without a title.\",\n      \"announcementDate\": \"2026-03-01T09:00:00Z\"\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400 Bad Request', () => pm.response.to.have.status(400));",
+                  "const error = pm.response.json().errors[0];",
+                  "pm.test('the error points at the missing member', () => {",
+                  "    pm.expect(['MISSING_PARAMETER', 'INVALID_PARAMETER_VALUE']).to.include(error.code);",
+                  "    pm.expect(error.source.pointer).to.include('title');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Create with an invalid date is 400",
+          "description": "`announcementDate` must be an RFC 3339 date-time, not a bare date.",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Api-Version",
+                "value": "{{apiVersion}}"
+              },
+              {
+                "key": "Api-Key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/announcements"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"data\": {\n    \"type\": \"announcements\",\n    \"attributes\": {\n      \"title\": \"A title\",\n      \"description\": \"A description.\",\n      \"announcementDate\": \"01-03-2026\"\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('the error points at announcementDate', () => {",
+                  "    pm.expect(JSON.stringify(pm.response.json())).to.include('announcementDate');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Create with a client generated id is 403",
+          "description": "Ids are assigned by the server; JSON API requires 403 rather than a silent override.",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Api-Version",
+                "value": "{{apiVersion}}"
+              },
+              {
+                "key": "Api-Key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/announcements"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"data\": {\n    \"type\": \"announcements\",\n    \"attributes\": {\n      \"title\": \"A title\",\n      \"description\": \"A description.\",\n      \"announcementDate\": \"2026-03-01T09:00:00Z\"\n    },\n    \"id\": \"11111111-2222-4333-8444-555555555555\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 403 Forbidden', () => pm.response.to.have.status(403));",
+                  "pm.test('error code is CLIENT_GENERATED_ID_NOT_SUPPORTED', () => {",
+                  "    pm.expect(pm.response.json().errors[0].code).to.eql('CLIENT_GENERATED_ID_NOT_SUPPORTED');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Create with the wrong resource type is 409",
+          "description": "A `type` that does not match the collection is a conflict.",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Api-Version",
+                "value": "{{apiVersion}}"
+              },
+              {
+                "key": "Api-Key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/announcements"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"data\": {\n    \"type\": \"articles\",\n    \"attributes\": {\n      \"title\": \"A title\",\n      \"description\": \"A description.\",\n      \"announcementDate\": \"2026-03-01T09:00:00Z\"\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 409 Conflict', () => pm.response.to.have.status(409));",
+                  "pm.test('error code is RESOURCE_TYPE_MISMATCH', () => {",
+                  "    pm.expect(pm.response.json().errors[0].code).to.eql('RESOURCE_TYPE_MISMATCH');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Create with an unknown attribute is 400",
+          "description": "The contract sets `additionalProperties: false`, so a typo surfaces instead of quietly losing data.",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Api-Version",
+                "value": "{{apiVersion}}"
+              },
+              {
+                "key": "Api-Key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/announcements"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"data\": {\n    \"type\": \"announcements\",\n    \"attributes\": {\n      \"title\": \"A title\",\n      \"description\": \"A description.\",\n      \"announcementDate\": \"2026-03-01T09:00:00Z\",\n      \"author\": \"someone\"\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400 Bad Request', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Create with an unsupported content type is 415",
+          "description": "The API only consumes application/json.",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Api-Version",
+                "value": "{{apiVersion}}"
+              },
+              {
+                "key": "Api-Key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "text/plain"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/announcements"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"data\": {\n    \"type\": \"announcements\",\n    \"attributes\": {\n      \"title\": \"A title\",\n      \"description\": \"A description.\",\n      \"announcementDate\": \"2026-03-01T09:00:00Z\"\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 415 Unsupported Media Type', () => pm.response.to.have.status(415));",
+                  "pm.test('error code is UNSUPPORTED_MEDIA_TYPE', () => {",
+                  "    pm.expect(pm.response.json().errors[0].code).to.eql('UNSUPPORTED_MEDIA_TYPE');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "3. List announcements (public)",
+      "description": "The list API, its pagination, ordering and caching behaviour.",
+      "item": [
+        {
+          "name": "List announcements",
+          "description": "Default page: newest first, server defined page size, conditional-GET headers. Saves the ETag for the next request.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Api-Version",
+                "value": "{{apiVersion}}"
+              },
+              {
+                "key": "Api-Key",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/announcements"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('the document is a JSON API collection', () => {",
+                  "    pm.expect(body.data).to.be.an('array');",
+                  "    pm.expect(body).to.not.have.property('errors');",
+                  "});",
+                  "pm.test('every resource matches the contract', () => {",
+                  "    body.data.forEach((resource) => {",
+                  "        pm.expect(resource.type).to.eql('announcements');",
+                  "        pm.expect(resource.id).to.be.a('string');",
+                  "        pm.expect(resource.attributes.title).to.be.a('string');",
+                  "        pm.expect(resource.attributes.description).to.be.a('string');",
+                  "        pm.expect(resource.attributes.announcementDate).to.match(/^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$/);",
+                  "    });",
+                  "});",
+                  "pm.test('meta reports the collection size and the page size', () => {",
+                  "    pm.expect(body.meta.count).to.be.at.least(3);",
+                  "    pm.expect(body.meta.pageSize).to.eql(body.data.length);",
+                  "});",
+                  "pm.test('pagination links are present', () => {",
+                  "    pm.expect(body.links.self).to.be.a('string');",
+                  "    pm.expect(body.links.first).to.be.a('string');",
+                  "});",
+                  "pm.test('the default order is newest first', () => {",
+                  "    const dates = body.data.map((r) => r.attributes.announcementDate);",
+                  "    pm.expect(dates).to.eql([...dates].sort().reverse());",
+                  "});",
+                  "pm.test('the response is conditionally cacheable', () => {",
+                  "    pm.expect(pm.response.headers.get('ETag')).to.be.a('string');",
+                  "    pm.expect(pm.response.headers.get('Cache-Control')).to.include('max-age');",
+                  "});",
+                  "pm.collectionVariables.set('etag', pm.response.headers.get('ETag'));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "List with If-None-Match is 304",
+          "description": "A conditional GET with the ETag from the previous request costs no bandwidth.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Api-Version",
+                "value": "{{apiVersion}}"
+              },
+              {
+                "key": "Api-Key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "If-None-Match",
+                "value": "{{etag}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/announcements"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 304 Not Modified', () => pm.response.to.have.status(304));",
+                  "pm.test('the body is empty', () => pm.expect(pm.response.text()).to.be.empty);"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "List one announcement per page",
+          "description": "Walks the first page of a `limit=1` pagination and stores the cursor from `links.next`.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Api-Version",
+                "value": "{{apiVersion}}"
+              },
+              {
+                "key": "Api-Key",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/announcements?limit=1"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('exactly one announcement is returned', () => {",
+                  "    pm.expect(body.data).to.have.lengthOf(1);",
+                  "    pm.expect(body.meta.pageSize).to.eql(1);",
+                  "});",
+                  "pm.test('there is a next page', () => pm.expect(body.links.next).to.be.a('string'));",
+                  "pm.collectionVariables.set('cursor', body.links.next.split('cursor=')[1]);",
+                  "pm.collectionVariables.set('firstPageId', body.data[0].id);"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "List the next page by cursor",
+          "description": "Following `links.next` returns the following announcement, never a repeat of the previous page.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Api-Version",
+                "value": "{{apiVersion}}"
+              },
+              {
+                "key": "Api-Key",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/announcements?limit=1&cursor={{cursor}}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('the page holds a different announcement', () => {",
+                  "    pm.expect(body.data).to.have.lengthOf(1);",
+                  "    pm.expect(body.data[0].id).to.not.eql(pm.collectionVariables.get('firstPageId'));",
+                  "});",
+                  "pm.test('the total is stable across pages', () => {",
+                  "    pm.expect(body.meta.count).to.be.at.least(3);",
+                  "});",
+                  "pm.test('self reflects the cursor that was followed', () => {",
+                  "    pm.expect(body.links.self).to.include('cursor=');",
+                  "    pm.expect(body.links.first).to.not.include('cursor=');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "List oldest first",
+          "description": "The one sortable property, in the other direction.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Api-Version",
+                "value": "{{apiVersion}}"
+              },
+              {
+                "key": "Api-Key",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/announcements?sort=announcementDate"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 OK', () => pm.response.to.have.status(200));",
+                  "const dates = pm.response.json().data.map((r) => r.attributes.announcementDate);",
+                  "pm.test('the order is oldest first', () => pm.expect(dates).to.eql([...dates].sort()));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "The announcement created earlier is in the list",
+          "description": "Ties the two APIs together: what was written is what is read back.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Api-Version",
+                "value": "{{apiVersion}}"
+              },
+              {
+                "key": "Api-Key",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/announcements?limit=100"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 OK', () => pm.response.to.have.status(200));",
+                  "const wanted = pm.collectionVariables.get('createdId');",
+                  "const found = pm.response.json().data.find((r) => r.id === wanted);",
+                  "pm.test('the created announcement is present and unchanged', () => {",
+                  "    pm.expect(found, 'announcement ' + wanted).to.not.be.undefined;",
+                  "    pm.expect(found.attributes.title).to.eql(pm.collectionVariables.get('createdTitle'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "List with an invalid limit is 400",
+          "description": "`limit` is bounded server side; anything outside the range is a client error rather than a silently clamped page.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Api-Version",
+                "value": "{{apiVersion}}"
+              },
+              {
+                "key": "Api-Key",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/announcements?limit=0"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('the error names the limit parameter', () => {",
+                  "    const error = pm.response.json().errors[0];",
+                  "    pm.expect(error.code).to.eql('INVALID_PARAMETER_VALUE');",
+                  "    pm.expect(error.source.parameter).to.eql('limit');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "List with a limit above the maximum is 400",
+          "description": "The server defined maximum page size is 100.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Api-Version",
+                "value": "{{apiVersion}}"
+              },
+              {
+                "key": "Api-Key",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/announcements?limit=1000"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('error code is INVALID_PARAMETER_VALUE', () => {",
+                  "    pm.expect(pm.response.json().errors[0].code).to.eql('INVALID_PARAMETER_VALUE');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "List with a tampered cursor is 400",
+          "description": "A cursor that was not issued by this API is refused, not followed.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Api-Version",
+                "value": "{{apiVersion}}"
+              },
+              {
+                "key": "Api-Key",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/announcements?cursor=Zm9yZ2Vk"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('the error names the cursor parameter', () => {",
+                  "    pm.expect(pm.response.json().errors[0].source.parameter).to.eql('cursor');",
+                  "});",
+                  "pm.test('nothing internal leaks', () => {",
+                  "    pm.expect(pm.response.text()).to.not.match(/Traceback|Exception|dynamodb/i);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "List with an invalid sort is 400",
+          "description": "Only `announcementDate` is sortable, and the contract says so.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Api-Version",
+                "value": "{{apiVersion}}"
+              },
+              {
+                "key": "Api-Key",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/announcements?sort=title"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('the error names the sort parameter', () => {",
+                  "    pm.expect(pm.response.json().errors[0].source.parameter).to.eql('sort');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Undefined query parameters are ignored",
+          "description": "The guidelines ask APIs to accept and ignore parameters they do not define, rather than failing the request.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Api-Version",
+                "value": "{{apiVersion}}"
+              },
+              {
+                "key": "Api-Key",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/announcements?utm_source=newsletter&debug=true"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 OK', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "List compressed with gzip",
+          "description": "Compression is only applied when the client asks for it. Note that Postman transparently decompresses, so this asserts a usable response rather than the wire format.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Api-Version",
+                "value": "{{apiVersion}}"
+              },
+              {
+                "key": "Api-Key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "Accept-Encoding",
+                "value": "gzip"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/announcements"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('the payload still parses as JSON', () => pm.response.json());"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "4. Guideline conformance",
+      "description": "Obligations the PIL RESTful API Guidelines place on every API.",
+      "item": [
+        {
+          "name": "Missing Api-Version is 400",
+          "description": "The guidelines require a request without a version to be rejected.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Api-Key",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/announcements"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('error code is MISSING_API_VERSION', () => {",
+                  "    const error = pm.response.json().errors[0];",
+                  "    pm.expect(error.code).to.eql('MISSING_API_VERSION');",
+                  "    pm.expect(error.source.parameter).to.eql('Api-Version');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Unsupported Api-Version is 400",
+          "description": "An unknown major version is rejected rather than served on a guess.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Api-Version",
+                "value": "99"
+              },
+              {
+                "key": "Api-Key",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/announcements"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('error code is INVALID_API_VERSION', () => {",
+                  "    pm.expect(pm.response.json().errors[0].code).to.eql('INVALID_API_VERSION');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Missing Api-Key is 403",
+          "description": "Client identification is mandatory on every method.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Api-Version",
+                "value": "{{apiVersion}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/announcements"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 403 Forbidden', () => pm.response.to.have.status(403));",
+                  "pm.test('error code is MISSING_API_KEY', () => {",
+                  "    pm.expect(pm.response.json().errors[0].code).to.eql('MISSING_API_KEY');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Invalid Api-Key is 403",
+          "description": "An unrecognised key is refused with the same status but a distinct code.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Api-Version",
+                "value": "{{apiVersion}}"
+              },
+              {
+                "key": "Api-Key",
+                "value": "definitely-not-a-valid-key"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/announcements"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 403 Forbidden', () => pm.response.to.have.status(403));",
+                  "pm.test('error code is INVALID_API_KEY', () => {",
+                  "    pm.expect(pm.response.json().errors[0].code).to.eql('INVALID_API_KEY');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "An Accept header we cannot satisfy is 406",
+          "description": "The API only produces JSON.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Api-Version",
+                "value": "{{apiVersion}}"
+              },
+              {
+                "key": "Api-Key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "Accept",
+                "value": "application/xml"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/announcements"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 406 Not Acceptable', () => pm.response.to.have.status(406));",
+                  "pm.test('error code is NOT_ACCEPTABLE', () => {",
+                  "    pm.expect(pm.response.json().errors[0].code).to.eql('NOT_ACCEPTABLE');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "An unsupported method is 405",
+          "description": "DELETE is not part of the contract, so the resource says so explicitly instead of leaking an authentication error.",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Api-Version",
+                "value": "{{apiVersion}}"
+              },
+              {
+                "key": "Api-Key",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/announcements"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 405 Method Not Allowed', () => pm.response.to.have.status(405));",
+                  "pm.test('the supported methods are advertised', () => {",
+                  "    pm.expect(pm.response.headers.get('Allow')).to.include('GET');",
+                  "});",
+                  "pm.test('error code is METHOD_NOT_ALLOWED', () => {",
+                  "    pm.expect(pm.response.json().errors[0].code).to.eql('METHOD_NOT_ALLOWED');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "An unknown path is 404",
+          "description": "Even the gateway's own rejections use the JSON API error document.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Api-Version",
+                "value": "{{apiVersion}}"
+              },
+              {
+                "key": "Api-Key",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/announcementz"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 404 Not Found', () => pm.response.to.have.status(404));",
+                  "pm.test('the error document is the standard shape', () => {",
+                  "    const error = pm.response.json().errors[0];",
+                  "    pm.expect(error.code).to.eql('RESOURCE_NOT_FOUND');",
+                  "    pm.expect(error.title).to.be.a('string');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "CORS preflight is answered from an explicit allow list",
+          "description": "Deny-by-default: only the configured origin, methods and headers come back.",
+          "request": {
+            "method": "OPTIONS",
+            "header": [
+              {
+                "key": "Origin",
+                "value": "{{allowedOrigin}}"
+              },
+              {
+                "key": "Access-Control-Request-Method",
+                "value": "POST"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/announcements"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 204 No Content', () => pm.response.to.have.status(204));",
+                  "pm.test('the policy is explicit, never a wildcard', () => {",
+                  "    const origin = pm.response.headers.get('Access-Control-Allow-Origin');",
+                  "    pm.expect(origin).to.not.eql('*');",
+                  "    pm.expect(origin).to.eql(pm.variables.get('allowedOrigin'));",
+                  "});",
+                  "pm.test('the allowed methods are listed', () => {",
+                  "    const methods = pm.response.headers.get('Access-Control-Allow-Methods');",
+                  "    pm.expect(methods).to.include('GET');",
+                  "    pm.expect(methods).to.include('POST');",
+                  "});",
+                  "pm.test('the guideline headers are allowed', () => {",
+                  "    const headers = pm.response.headers.get('Access-Control-Allow-Headers');",
+                  "    pm.expect(headers).to.include('Api-Key');",
+                  "    pm.expect(headers).to.include('Api-Version');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    }
+  ]
+}
