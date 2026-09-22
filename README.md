@@ -61,6 +61,46 @@ lists what each alarm catches.
 
 ---
 
+## Live environment
+
+A `dev` environment is deployed and reachable:
+
+| | |
+|---|---|
+| **API** | `https://r7fkne5czg.execute-api.eu-north-1.amazonaws.com/v1/announcements` |
+| **OAuth 2.0 token endpoint** | `https://announcements-dev-411480503920.auth.eu-north-1.amazoncognito.com/oauth2/token` |
+| **Region** | `eu-north-1` (the `eu-west-1` in the contract is the canonical PIL region, not where this demo runs) |
+
+Both endpoints need credentials, so a bare request returns `403`:
+
+```bash
+curl -i https://r7fkne5czg.execute-api.eu-north-1.amazonaws.com/v1/announcements
+```
+
+```json
+{"errors":[{"status":"403","code":"MISSING_API_KEY","title":"Missing API key",
+  "detail":"The Api-Key header is required.","source":{"parameter":"Api-Key"}}]}
+```
+
+The `Api-Key` and the OAuth client secret are generated at deploy time and
+live in Secrets Manager and Cognito — nothing is committed here. Anyone with
+access to the account can read them:
+
+```bash
+./scripts/show_credentials.sh --env dev --region eu-north-1
+```
+
+Then exercise the whole thing in one command:
+
+```bash
+./scripts/smoke_test.sh --env dev --region eu-north-1
+```
+
+> This is a demo environment and may be torn down. Everything needed to
+> recreate it is in this repository — see [Deploying](#deploying).
+
+---
+
 ## The API in one screen
 
 ```http
